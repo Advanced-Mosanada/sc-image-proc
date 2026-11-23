@@ -1,5 +1,9 @@
-"""Player for the video this PC streams to the target: open, play, pause,
-rewind, seek, speed, loop, A-B loop."""
+"""Player: open, play, pause, rewind, seek, speed, loop, A-B loop.
+
+Either for the video this PC streams to the target (media.Streamer), or for a
+video file the target plays itself (TargetPlayer); both have the same API,
+the panel's `backend`.
+"""
 
 from __future__ import annotations
 
@@ -22,7 +26,9 @@ from PySide6.QtWidgets import (
 
 from .. import media, settings, theme
 from ..icons import set_icon
+from ..target_player import TargetPlayer
 from .common import Card, tool_button
+from .files import TargetFileDialog
 
 SPEEDS = [0.25, 0.5, 1.0, 1.5, 2.0, 4.0]
 SKIP_SECONDS = 5.0
@@ -101,7 +107,8 @@ class SeekSlider(QSlider):
 
 
 class PlayerPanel(Card):
-    """Owns the Streamer; preview frames of what is sent go to `on_frame`."""
+    """Owns the Streamer (preview frames of what is sent go to `on_frame`);
+    with set_target() it controls the target's player instead."""
 
     message = Signal(str)  # for the status bar
     opened = Signal(str)  # path of the file now loaded
@@ -109,15 +116,16 @@ class PlayerPanel(Card):
     def __init__(self, on_frame=None, parent: QWidget | None = None):
         super().__init__("Video from this PC", parent=parent)
         self.streamer: media.Streamer | None = None
+        self.remote: TargetPlayer | None = None  # set by the window
+        self.on_target = False
         self._seeking = False
         self._marks: dict[str, float | None] = {"a": None, "b": None}
 
-        if not media.available():
+        if media.available():
+            self.streamer = media.Streamer(on_frame=on_frame, on_error=self.message.emit)
+        else:
             self.hint.setText(f"Streaming needs GStreamer for Python: {media.GST_ERROR}")
             self.hint.show()
-            self.setEnabled(False)
-            return
-        self.streamer = media.Streamer(on_frame=on_frame, on_error=self.message.emit)
 
         # Title row: what is loaded, and the Open button.
         self.file_label = QLabel()
@@ -215,6 +223,29 @@ class PlayerPanel(Card):
 
     # --- public ---------------------------------------------------------------
 
+    @property
+    def backend(self) -> media.Streamer | TargetPlayer | None:
+        """What the controls drive."""
+        return self.remote if self.on_target else self.streamer
+
+    def set_target(self, on: bool) -> None:
+        """Control the video the target plays (on), or stream from this PC."""
+        if on == self.on_target:
+            return
+        if on and self.streamer is not None and self.streamer.state == "playing":
+            self.streamer.pause()  # nobody receives it any more
+        self.on_target = on
+        self.title.setText("Video on the target" if on else "Video from this PC")
+        self.open_button.setToolTip(
+            "Choose a video on the target (Ctrl+O)"
+            if on
+            else "Open a video file (Ctrl+O), or drop one on the left view"
+        )
+        self.route_label.setVisible(not on)
+        self._marks = {"a": None, "b": None}
+        self._apply_info(self.backend.info if self.backend else None)
+        self._update_controls()
+
     def set_destination(self, host: str, port: int) -> None:
         if self.streamer:
             self._guarded(self.streamer.set_destination, host, port)
@@ -233,25 +264,35 @@ class PlayerPanel(Card):
             self.message.emit(f"player: {error}")
 
     def choose_file(self) -> None:
+        if self.on_target:
+            if self.remote is not None:
+                dialog = TargetFileDialog(self.remote.client, self.window())
+                if dialog.exec() and dialog.chosen:
+                    self.open(dialog.chosen)
+            return
         folder = settings.get("player/folder", "")
         path, _ = QFileDialog.getOpenFileName(self, "Video to stream", folder, VIDEO_FILTER)
         if path:
             self.open(path)
 
     def open(self, path: str) -> bool:
-        if not self.streamer:
+        """A file on this PC, or on the target in target mode."""
+        backend = self.backend
+        if backend is None:
             return False
         try:
-            info = self.streamer.open(path)
+            info = backend.open(path)
         except (OSError, RuntimeError) as error:
             self.message.emit(f"cannot open {path}: {error}")
             return False
-        settings.put("player/folder", str(Path(path).parent))
-        self.streamer.set_rate(SPEEDS[self.speed.currentIndex()])
-        self.streamer.set_loop(self.loop.isChecked())
+        if self.on_target:
+            self.speed.setCurrentIndex(SPEEDS.index(1.0))
+        else:
+            settings.put("player/folder", str(Path(path).parent))
+            backend.set_rate(SPEEDS[self.speed.currentIndex()])
+            backend.set_loop(self.loop.isChecked())
         self._marks = {"a": None, "b": None}
-        self.slider.setRange(0, int(info.duration * 1000))
-        self._show_file(info)
+        self._apply_info(info)
         self._update_controls()
         self.opened.emit(path)
         return True
@@ -266,8 +307,8 @@ class PlayerPanel(Card):
         self._streamer_do("stop")
 
     def restart(self) -> None:
-        if self.streamer:
-            start = self._marks["a"] if self.streamer.a is not None else 0.0
+        if self.backend:
+            start = self._marks["a"] if self.backend.a is not None else 0.0
             self._streamer_do("seek", start or 0.0)
 
     def clear_ab(self) -> None:
@@ -276,7 +317,7 @@ class PlayerPanel(Card):
 
     @property
     def is_open(self) -> bool:
-        return self.streamer is not None and self.streamer.state != "closed"
+        return self.backend is not None and self.backend.state != "closed"
 
     def close(self) -> bool:
         if self.streamer:
@@ -285,14 +326,24 @@ class PlayerPanel(Card):
 
     # --- internals ------------------------------------------------------------
 
+    def _apply_info(self, info: media.MediaInfo | None) -> None:
+        """A new file, or new details of it (the target's arrive late)."""
+        self.slider.setRange(0, int(info.duration * 1000) if info else 0)
+        self._show_file(info)
+
     def _show_file(self, info: media.MediaInfo | None) -> None:
         self._info = info
         if info is None:
-            self.file_label.setText("no file: open one, or drop it on the left view")
+            self.file_label.setText(
+                "no file: Open one on the target"
+                if self.on_target
+                else "no file: open one, or drop it on the left view"
+            )
             self.file_label.setToolTip("")
             return
         name = Path(info.path).name
-        details = f"{info.width}×{info.height} · {info.fps:.3g} fps · {clock(info.duration)}"
+        size = f"{info.width}×{info.height} · {info.fps:.3g} fps · " if info.width else ""
+        details = f"{size}{clock(info.duration)}"
         self.file_label.setText(
             f"<b style='color:{theme.current().text}'>{name}</b>&nbsp;&nbsp;{details}"
         )
@@ -302,7 +353,7 @@ class PlayerPanel(Card):
         if not self.is_open:
             return
         try:
-            getattr(self.streamer, name)(*args)
+            getattr(self.backend, name)(*args)
         except ValueError as error:
             self.message.emit(str(error))
         self._update_controls()
@@ -310,7 +361,7 @@ class PlayerPanel(Card):
     def _mark(self, which: str) -> None:
         if not self.is_open:
             return
-        self._marks[which] = self.streamer.position()
+        self._marks[which] = self.backend.position()
         a, b = self._marks["a"], self._marks["b"]
         if a is not None and b is not None:
             if b <= a:
@@ -328,21 +379,45 @@ class PlayerPanel(Card):
         self._streamer_do("seek", self.slider.value() / 1000)
 
     def _tick(self) -> None:
-        if not self.streamer:
+        backend = self.backend
+        if backend is None:
             return
-        self.streamer.poll()
+        backend.poll()
+        if backend.info != self._info:
+            self._apply_info(backend.info)
         if not self.is_open:
             return
+        if self.on_target:
+            self._follow_target(backend)
         if not self._seeking:
-            position = self.streamer.position()
+            position = backend.position()
             self.slider.blockSignals(True)
             self.slider.setValue(int(position * 1000))
             self.slider.blockSignals(False)
             self._show_time(int(position * 1000))
         self._update_controls()
 
+    def _follow_target(self, remote: TargetPlayer) -> None:
+        """Show the target's speed, loop and A-B (also when another GUI set them)."""
+        if remote.rate in SPEEDS and SPEEDS[self.speed.currentIndex()] != remote.rate:
+            self.speed.blockSignals(True)
+            self.speed.setCurrentIndex(SPEEDS.index(remote.rate))
+            self.speed.blockSignals(False)
+        if self.loop.isChecked() != remote.loop:
+            self.loop.blockSignals(True)
+            self.loop.setChecked(remote.loop)
+            self.loop.blockSignals(False)
+        if remote.a is not None and remote.b is not None:
+            self._marks = {"a": remote.a, "b": remote.b}
+        elif all(m is not None for m in self._marks.values()):
+            self._marks = {"a": None, "b": None}
+
     def _update_controls(self) -> None:
-        if not self.streamer:
+        backend = self.backend
+        self.open_button.setEnabled(backend is not None)
+        if backend is None:
+            for widget in (self.slider, self.play_button, self.speed, self.loop):
+                widget.setEnabled(False)
             return
         opened = self.is_open
         for widget in (
@@ -359,18 +434,18 @@ class PlayerPanel(Card):
             self.loop,
         ):
             widget.setEnabled(opened)
-        playing = self.streamer.state == "playing"
+        playing = backend.state == "playing"
         icon = "pause" if playing else "play"
         if self.play_button.property("_icon") != (icon, "accent_text"):
             set_icon(self.play_button, icon, role="accent_text", size=20)
-        self.duration_label.setText(clock(self.streamer.duration() if opened else None))
+        self.duration_label.setText(clock(backend.duration() if opened else None))
         a, b = self._marks["a"], self._marks["b"]
         self.slider.set_marks(
             None if a is None else int(a * 1000), None if b is None else int(b * 1000)
         )
         self.a_button.setChecked(a is not None)
         self.b_button.setChecked(b is not None)
-        if self.streamer.a is not None:
+        if backend.a is not None:
             self.ab_label.setText(f"{clock(a)} – {clock(b)}")
         elif a is not None or b is not None:
             self.ab_label.setText("set A and B")

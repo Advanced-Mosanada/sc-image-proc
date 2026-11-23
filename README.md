@@ -205,11 +205,22 @@ The GUI finds targets on the LAN (see [host/aipc-gui](host/aipc-gui) for setup):
 cd host/aipc-gui && uv run aipc-gui
 ```
 
-A typical session: choose *Video file streamed from this PC* as input, open a
-file in the player and press play; the target receives it on `rtp://:5000`.
-Add functions from the list, tune them with the generated controls, and watch
-the result, which the target sends back to the PC on UDP port 5002 (*Outputs*
-tab), side by side with what was sent. Statistics show the time per function.
+A typical session: choose *Video from this PC* as input, open a file in the
+player and press play. Add functions from the list, tune them with the
+generated controls, and watch the result, which the target sends back to the
+PC on UDP port 5002 (*Outputs* tab), side by side with what was sent.
+Statistics show the time per function.
+
+How the video gets to the target, all in the *Input* tab:
+
+| | sent as | the target's input |
+|---|---|---|
+| *Video from this PC*, H.264 | compressed by the PC: bitrate or constant quality, x264 preset, key frames | `rtp://:5000` |
+| *Video from this PC*, raw | every pixel as decoded (I420: ~124 Mbit/s for PAL, ~330 for 720p30) | `tcp://:5000` |
+| *File or URL on the target* | nothing: the target plays its own file, the player controls it | the file |
+
+In the last case the target sends its input back too (UDP 5004, compressed:
+it is only for watching), so the left view shows what the functions get.
 
 From the shell or scripts:
 

@@ -99,3 +99,50 @@ def test_streams_raw_frames_to_the_target(qtbot, window, clip):
     window.inputs.transport.setCurrentIndex(0)
     qtbot.waitUntil(lambda: window.inputs.current_uri == f"rtp://:{to_target}", timeout=3000)
     qtbot.waitUntil(lambda: window.last_stats.get("state") == "running", timeout=5000)
+
+
+@pytest.mark.skipif(not media.available(), reason="no GStreamer for Python")
+def test_controls_a_file_the_target_plays(qtbot, window, clip):
+    """Here the target is scipd on this PC, so the clip is a file "on the target"."""
+    from aipc_gui.widgets.files import TargetFileDialog
+
+    dialog = TargetFileDialog(window.client)
+    qtbot.addWidget(dialog)
+    dialog.show_folder(str(clip.parent))
+    qtbot.waitUntil(lambda: dialog.list.count() > 0, timeout=3000)
+    assert dialog.list.item(0).text() == clip.name
+
+    window.outputs.to_pc_port.setValue(free_udp_port())
+    window.outputs.input_port.setValue(free_udp_port())
+    window.outputs.to_pc.setChecked(True)
+    window.outputs.apply()
+    window.inputs.open_target_file(str(clip))
+    qtbot.waitUntil(lambda: window.player.on_target, timeout=3000)
+    assert window.player.title.text() == "Video on the target"
+    remote = window.player.remote
+    qtbot.waitUntil(lambda: remote.info is not None and remote.info.width == 320, timeout=3000)
+    assert remote.state == "paused"  # a new video starts paused
+    assert remote.duration() == pytest.approx(3.0, abs=0.1)
+
+    window.player.toggle()  # play, on the target
+    qtbot.waitUntil(lambda: window.last_stats.get("state") == "running", timeout=3000)
+    # Both views: the target's input on the left, its result on the right.
+    qtbot.waitUntil(
+        lambda: window.sent_view.image is not None and window.result_view.image is not None,
+        timeout=8000,
+    )
+    assert window.sent_view.title == "Input of the target"
+
+    window.player.toggle()  # pause
+    qtbot.waitUntil(lambda: window.last_stats.get("state") == "paused", timeout=3000)
+    window.player.slider.jumped.emit(2000)  # click at 2 s
+    qtbot.waitUntil(
+        lambda: abs((window.last_stats.get("playback") or {}).get("position", 0) - 2.0) < 0.1,
+        timeout=3000,
+    )
+    assert remote.position() == pytest.approx(2.0, abs=0.1)
+
+    # Back to streaming from this PC: the player follows.
+    window.inputs.kind.setCurrentIndex(FROM_PC)
+    window.inputs.apply()
+    qtbot.waitUntil(lambda: not window.player.on_target, timeout=3000)

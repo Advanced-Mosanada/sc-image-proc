@@ -28,6 +28,7 @@ DEFAULT_PORT = 5600
 DISCOVERY_PORT = 5601
 VIDEO_TO_TARGET_PORT = 5000  # the target's input rtp://:5000
 VIDEO_FROM_TARGET_PORT = 5002  # the target's output udp:HOST:5002
+INPUT_FROM_TARGET_PORT = 5004  # the target's input output udp:HOST:5004
 
 # Error codes (protocol section 3).
 PARSE_ERROR = -32700

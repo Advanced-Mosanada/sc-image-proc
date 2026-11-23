@@ -27,16 +27,17 @@ from PySide6.QtWidgets import (
 from .. import settings, theme
 from ..icons import icon, pixmap
 from ..media import X264_PRESETS, MediaInfo, StreamSettings
-from ..protocol import VIDEO_FROM_TARGET_PORT, VIDEO_TO_TARGET_PORT
+from ..protocol import INPUT_FROM_TARGET_PORT, VIDEO_FROM_TARGET_PORT, VIDEO_TO_TARGET_PORT
 from ..qt_client import QtAipcClient
 from .common import Card, tool_button
+from .files import TargetFileDialog
 
 # Input kinds, in the order of the list.
 FROM_PC, CAMERA, TARGET_FILE, NETWORK, PATTERN = range(5)
 KINDS = [
     ("film", "Video from this PC", "Streamed by the player below the videos"),
     ("camera", "Camera on the target", "A V4L2 camera and its mode"),
-    ("file", "File or URL on the target", "A video on the target, or rtsp://, http://"),
+    ("file", "File or URL on the target", "Played by the target, controlled from here"),
     ("network", "RTP stream", "H.264 sent to the target by another sender"),
     ("pattern", "Test pattern", "Generated on the target"),
 ]
@@ -157,6 +158,7 @@ class InputPanel(QScrollArea):
 
     streaming_from_pc = Signal(bool, int)  # on, port
     stream_settings_changed = Signal(object)  # StreamSettings, while streaming from the PC
+    target_player = Signal(bool)  # the target plays a video file (the player controls it)
 
     def __init__(self, client: QtAipcClient, parent: QWidget | None = None):
         super().__init__(parent)
@@ -247,10 +249,18 @@ class InputPanel(QScrollArea):
         # File or URL on the target.
         form = self.pages.add_form()
         self.target_uri = QLineEdit(placeholderText="/home/root/videos/clip.mp4 or rtsp://...")
+        self.target_uri.setToolTip(
+            "A file plays like in a player (the player under the videos controls it);"
+            " a URL is just received"
+        )
+        browse = tool_button("folder", "Choose a video on the target", self.browse_target)
+        uri_row = QHBoxLayout()
+        uri_row.addWidget(self.target_uri, 1)
+        uri_row.addWidget(browse)
         self.realtime = QCheckBox("Play at its frame rate", checked=True)
         self.realtime.setToolTip("Off: as fast as the target can (to measure)")
         self.target_loop = QCheckBox("Loop")
-        form.addRow("Path or URL", self.target_uri)
+        form.addRow("Path or URL", uri_row)
         form.addRow(self.realtime)
         form.addRow(self.target_loop)
 
@@ -353,15 +363,15 @@ class InputPanel(QScrollArea):
             w, h, fps = 720, 576, 25.0
             what = "PAL"
         mbits = st.megabits(w, h, fps)
-        size = f"{w}\u00d7{h} at {fps:g} fps"
+        size = f"{w}\u00d7{h}, {fps:g} fps"
         if mbits is None:
-            self.stream_estimate.setText(f"Bitrate follows the picture ({what}: {size})")
+            text = f"Bitrate follows the picture ({what}: {size})"
         elif st.raw:
-            self.stream_estimate.setText(
-                f"\u2248 {mbits:.0f} Mbit/s for {what} ({size}); gigabit Ethernet carries ~940"
-            )
+            text = f"\u2248 {mbits:.0f} Mbit/s for {what} ({size})"
         else:
-            self.stream_estimate.setText(f"{mbits:g} Mbit/s")
+            text = f"{mbits:g} Mbit/s"
+        self.stream_estimate.setText(text)
+        self.stream_estimate.setToolTip("Gigabit Ethernet carries about 940 Mbit/s")
 
     def _stream_edited(self) -> None:
         st = self.stream_settings()
@@ -437,6 +447,19 @@ class InputPanel(QScrollArea):
             self.target_loop.setChecked(bool(current.get("loop")))
         from_pc = port is not None and self.kind.currentIndex() == FROM_PC
         self.streaming_from_pc.emit(from_pc, port or 0)
+        self.target_player.emit(bool(uri) and bool(current.get("player")))
+
+    def browse_target(self) -> None:
+        dialog = TargetFileDialog(self.client, self.window())
+        if dialog.exec() and dialog.chosen:
+            self.open_target_file(dialog.chosen)
+
+    def open_target_file(self, path: str) -> None:
+        """Have the target play a file of its own (the player then controls it)."""
+        self.kind.setCurrentIndex(TARGET_FILE)
+        self.target_uri.setText(path)
+        self.realtime.setChecked(True)
+        self.apply()
 
     # --- user -----------------------------------------------------------------
 
@@ -454,10 +477,12 @@ class InputPanel(QScrollArea):
                 return
             params["uri"] = mode
         elif kind == TARGET_FILE:
+            uri = self.target_uri.text().strip()
             params.update(
-                uri=self.target_uri.text().strip(),
+                uri=uri,
                 realtime=self.realtime.isChecked(),
                 loop=self.target_loop.isChecked(),
+                player="://" not in uri,  # a file: controlled like a player
             )
         else:
             params.update(
@@ -534,12 +559,15 @@ class OutputPanel(QScrollArea):
     """The target's outputs. `preview_port` is 0 when the result is not sent here."""
 
     preview_port = Signal(int)
+    input_preview_port = Signal(int)  # 0 when the target's input is not sent here
 
     def __init__(self, client: QtAipcClient, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.client = client
         self.outputs: list[str] = []
+        self.input_outputs: list[str] = []
+        self.input_from_pc = False  # then the left view shows the PC's own preview
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -566,6 +594,19 @@ class OutputPanel(QScrollArea):
 
         self.extra = QLineEdit(placeholderText="More outputs, comma separated: udp:HOST:PORT, ...")
         card.body.addWidget(self.extra)
+
+        self.show_input = QCheckBox("Its input too (the left view)")
+        self.show_input.setToolTip(
+            "The target sends what it receives, before the functions: a camera, or the\n"
+            "file it plays. Costs one more encoder on the target. Not needed (and not\n"
+            "sent) while this PC streams the video."
+        )
+        self.show_input.setChecked(settings.get("outputs/show_input", True, bool))
+        self.show_input.toggled.connect(lambda on: settings.put("outputs/show_input", on))
+        self.show_input.toggled.connect(lambda _on: self.apply_input_outputs())
+        self.input_port = port_box(INPUT_FROM_TARGET_PORT)
+        self.input_port.setPrefix("port ")
+        card.body.addLayout(option_row("camera", self.show_input, self.input_port))
         apply = QPushButton("Apply outputs")
         apply.setObjectName("primary")
         apply.clicked.connect(self.apply)
@@ -617,6 +658,32 @@ class OutputPanel(QScrollArea):
         known = {here, *displays, *recordings}
         self.extra.setText(", ".join(o for o in self.outputs if o not in known))
         self.preview_port.emit(self.to_pc_port.value() if here in self.outputs else 0)
+        self.input_outputs = result.get("input_outputs", [])
+        input_here = self._input_uri()
+        self.input_preview_port.emit(
+            self.input_port.value() if input_here in self.input_outputs else 0
+        )
+
+    def set_input_from_pc(self, from_pc: bool) -> None:
+        """The input changed: the target's input goes to the left view unless
+        this PC streams it (the PC shows its own preview then)."""
+        self.input_from_pc = from_pc
+        self.apply_input_outputs()
+
+    def apply_input_outputs(self) -> None:
+        """Send the target's input here, or stop, when that changed."""
+        wanted = (
+            [self._input_uri()] if self.show_input.isChecked() and not self.input_from_pc else []
+        )
+        mine = {self._input_uri()}
+        others = [o for o in self.input_outputs if o not in mine]  # another GUI's
+        if sorted(wanted + others) != sorted(self.input_outputs) and self.client.is_connected:
+            self.client.call(
+                "output.set",
+                {"input_outputs": others + wanted},
+                on_result=self.set_outputs,
+                on_error=self._show_error,
+            )
 
     def update_status(self, stats: dict[str, Any]) -> None:
         t = theme.current()
@@ -626,7 +693,8 @@ class OutputPanel(QScrollArea):
             item = QListWidgetItem("No outputs: the result goes nowhere")
             item.setForeground(QColor(t.muted))
             self.status.addItem(item)
-        for output in outputs:
+        inputs = [dict(o, uri=f"input \u2192 {o['uri']}") for o in stats.get("input_outputs", [])]
+        for output in outputs + inputs:
             if output["error"]:
                 item = QListWidgetItem(
                     icon("close", t.danger), f"{output['uri']}: {output['error']}"
@@ -656,7 +724,7 @@ class OutputPanel(QScrollArea):
         self.client.call(
             "output.set",
             {"outputs": outputs},
-            on_result=self.set_outputs,
+            on_result=lambda result: (self.set_outputs(result), self.apply_input_outputs()),
             on_error=self._show_error,
         )
 
@@ -666,6 +734,9 @@ class OutputPanel(QScrollArea):
         item = QListWidgetItem(icon("close", t.danger), error.message)
         item.setForeground(QColor(t.danger))
         self.status.addItem(item)
+
+    def _input_uri(self) -> str:
+        return f"udp:{self.client.local_address}:{self.input_port.value()}"
 
     def _to_pc_uri(self) -> str:
         return f"udp:{self.client.local_address}:{self.to_pc_port.value()}"

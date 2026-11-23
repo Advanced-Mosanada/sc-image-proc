@@ -34,6 +34,7 @@ from . import media, settings, theme
 from .icons import icon, set_icon
 from .protocol import DEFAULT_PORT, PROTOCOL_VERSION, Target
 from .qt_client import QtAipcClient, QtDiscovery
+from .target_player import TargetPlayer
 from .widgets.common import Pill, tool_button
 from .widgets.io import InputPanel, OutputPanel
 from .widgets.pipeline import PipelinePanel
@@ -77,7 +78,8 @@ class MainWindow(QMainWindow):
         self.resize(1560, 940)
         self.client = QtAipcClient(self)
         self.discovery = QtDiscovery(self)
-        self.receiver: media.RtpReceiver | None = None
+        self.receiver: media.RtpReceiver | None = None  # the result, right view
+        self.input_receiver: media.RtpReceiver | None = None  # the target's input, left view
         self.target_info: dict[str, Any] = {}
         self.last_stats: dict[str, Any] = {}
         self._auto_connect = False
@@ -93,9 +95,14 @@ class MainWindow(QMainWindow):
         self.inputs = InputPanel(self.client)
         self.inputs.streaming_from_pc.connect(self._streaming_from_pc)
         self.inputs.stream_settings_changed.connect(self.player.configure)
-        self.player.opened.connect(lambda _path: self.inputs.set_media(self.player.streamer.info))
+        self.inputs.target_player.connect(self.player.set_target)
+        self.player.remote = TargetPlayer(self.client, open_file=self.inputs.open_target_file)
+        self.player.opened.connect(
+            lambda _path: self.inputs.set_media(self.player.streamer and self.player.streamer.info)
+        )
         self.outputs = OutputPanel(self.client)
         self.outputs.preview_port.connect(self._set_preview)
+        self.outputs.input_preview_port.connect(self._set_input_preview)
         self.stats = StatsPanel()
         self.info = InfoPanel()
 
@@ -286,6 +293,12 @@ class MainWindow(QMainWindow):
     # --- video from this PC -------------------------------------------------------
 
     def open_video(self, path: str) -> None:
+        if self.player.on_target:
+            self.show_message(
+                "the target plays its own file now: for a file of this PC, choose "
+                "\u201cVideo from this PC\u201d in the Input tab"
+            )
+            return
         if self.player.open(path):
             self.show_message(f"opened {path}")
 
@@ -366,6 +379,8 @@ class MainWindow(QMainWindow):
     def _disconnected(self, reason: str) -> None:
         self._set_connected(False)
         self._set_preview(0)
+        self._set_input_preview(0)
+        self.player.set_target(False)
         self.show_message(f"disconnected: {reason}" if reason else "disconnected")
 
     def _set_connected(self, connected: bool) -> None:
@@ -424,6 +439,8 @@ class MainWindow(QMainWindow):
             self.client.call("input.get", on_result=self.inputs.set_input)
         elif what == "outputs":
             self.client.call("output.get", on_result=self.outputs.set_outputs)
+        elif what == "playback":
+            self.client.call("playback.get", on_result=self.player.remote.update)
 
     def _event(self, method: str, params: dict[str, Any]) -> None:
         if method == "event.stats":
@@ -431,6 +448,7 @@ class MainWindow(QMainWindow):
             self.stats.update_stats(params)
             self.pipeline.update_status(params)
             self.outputs.update_status(params)
+            self.player.remote.update(params.get("playback"), params.get("input"))
             state = params.get("state", "?")
             self.state_pill.set(state, state)
             timing = params.get("timing", {})
@@ -449,6 +467,10 @@ class MainWindow(QMainWindow):
     # --- video ------------------------------------------------------------------
 
     def _streaming_from_pc(self, on: bool, port: int) -> None:
+        # Left view: this PC's own preview, or the target's input sent back.
+        self.sent_view.title = "Sent from this PC" if on else "Input of the target"
+        self.sent_view.update()
+        self.outputs.set_input_from_pc(on)
         if on:
             # Destination first: new settings then connect straight to it.
             self.player.set_destination(self.client.host, port)
@@ -470,7 +492,28 @@ class MainWindow(QMainWindow):
         elif self.client.is_connected:
             self.result_view.clear("The result is not sent to this PC", "Tick “This PC” in Outputs")
 
+    def _set_input_preview(self, port: int) -> None:
+        """Receive the target's input on `port` for the left view (0 = stop)."""
+        if self.input_receiver is not None and self.input_receiver.port == port:
+            return
+        if self.input_receiver is not None:
+            self.input_receiver.stop()
+            self.input_receiver = None
+        if port and media.available():
+            self.input_receiver = media.RtpReceiver(port, on_frame=self.sent_view.show_frame)
+            self.input_receiver.start()
+            self.sent_view.clear("Waiting for the target's input", f"on udp port {port}")
+        elif not self.outputs.input_from_pc:
+            self.sent_view.clear(
+                "The input is not sent to this PC", "Tick \u201cIts input too\u201d in Outputs"
+            )
+
     def _poll(self) -> None:
+        if self.input_receiver is not None:
+            self.input_receiver.poll()
+            if self.input_receiver.error:
+                self.sent_view.clear("No input preview", self.input_receiver.error)
+                self.input_receiver = None
         if self.receiver is not None:
             self.receiver.poll()
             if self.receiver.error:
@@ -506,6 +549,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._save()
         self._set_preview(0)
+        self._set_input_preview(0)
         self.player.close()
         self.client.close()
         super().closeEvent(event)

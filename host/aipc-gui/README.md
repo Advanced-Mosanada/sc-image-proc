@@ -42,6 +42,10 @@ uv run aipc 192.168.50.2 system.info
 uv run aipc 192.168.50.2 pipeline.set '{"text": "gray ! blur ksize=5"}'
 ```
 
+- **Video to the target** (*Input* tab): from this PC as H.264 (bitrate or
+  constant quality, preset, key frames) or as raw frames over TCP
+  (lossless); or a file the target plays itself, controlled by the same
+  player (choose it with the folder button: it lists the target's files).
 - **Theme**: dark, light, or like the desktop: the sun/moon button in the
   header (Ctrl+T), or `--theme dark`. The choice is remembered.
 - **Keys**: Space play/pause, ←/→ back/forward 5 s, Home to the start,
