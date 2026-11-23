@@ -3,6 +3,7 @@
 # every backend (CPU, NEON, OpenCL, G2D, NPU) builds on.
 add_library(scip_core STATIC
     frame.cpp
+    params.cpp
     pipeline.cpp
     stats.cpp)
 add_library(scip::core ALIAS scip_core)
