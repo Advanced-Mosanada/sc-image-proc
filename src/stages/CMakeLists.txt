@@ -7,8 +7,12 @@
 #
 # To add a function: create a .cpp here (see README.md) and list it below.
 add_library(scip_stages OBJECT
+    clahe.cpp
+    edges.cpp
     gaussian_blur.cpp
+    invert.cpp
     resize.cpp
+    threshold.cpp
     to_gray.cpp)
 add_library(scip::stages ALIAS scip_stages)
 

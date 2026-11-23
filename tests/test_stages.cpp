@@ -130,3 +130,51 @@ TEST(BuiltinStages, ChainFromText)
     EXPECT_EQ(chain[1]->name(), "gray");
     EXPECT_EQ(chain[2]->name(), "blur ksize=3 sigma=0.8");
 }
+
+TEST(Invert, IsNegative)
+{
+    const Frame input = randomFrame(FrameInfo{40, 30, PixelFormat::Bgr8});
+    auto stage = make("invert");
+    const Frame ours = runStage(*stage, input);
+    EXPECT_EQ(ours.row(7)[11], 255 - input.row(7)[11]);
+}
+
+TEST(Threshold, FixedAndOtsu)
+{
+    const Frame input = randomFrame(FrameInfo{40, 30, PixelFormat::Gray8});
+    auto fixed = make("threshold value=100");
+    const Frame ours = runStage(*fixed, input);
+    cv::Mat reference;
+    cv::threshold(scip::asMat(input), reference, 100, 255, cv::THRESH_BINARY);
+    EXPECT_EQ(cv::norm(scip::asMat(ours), reference, cv::NORM_INF), 0.0);
+
+    auto otsu = make("threshold mode=otsu");
+    EXPECT_NO_THROW(runStage(*otsu, input));
+    const Frame color = randomFrame(FrameInfo{40, 30, PixelFormat::Bgr8});
+    EXPECT_THROW(otsu->configure(color.info()), std::invalid_argument);
+}
+
+TEST(Edges, MatchesCannyAndAcceptsColor)
+{
+    const Frame gray = scip::io::makeTestPattern(FrameInfo{96, 64, PixelFormat::Gray8});
+    auto stage = make("edges low=40 high=120");
+    const Frame ours = runStage(*stage, gray);
+    cv::Mat reference;
+    cv::Canny(scip::asMat(gray), reference, 40, 120, 3);
+    EXPECT_EQ(cv::norm(scip::asMat(ours), reference, cv::NORM_INF), 0.0);
+
+    const Frame color = scip::io::makeTestPattern(FrameInfo{96, 64, PixelFormat::Bgr8});
+    EXPECT_EQ(runStage(*stage, color).format(), PixelFormat::Gray8);
+    EXPECT_THROW(make("edges low=200 high=100"), std::invalid_argument);
+}
+
+TEST(Clahe, NeedsGrayAndMatchesOpenCv)
+{
+    const Frame input = randomFrame(FrameInfo{64, 48, PixelFormat::Gray8});
+    auto stage = make("clahe clip=3 tiles=4");
+    const Frame ours = runStage(*stage, input);
+    cv::Mat reference;
+    cv::createCLAHE(3.0, cv::Size(4, 4))->apply(scip::asMat(input), reference);
+    EXPECT_EQ(cv::norm(scip::asMat(ours), reference, cv::NORM_INF), 0.0);
+    EXPECT_THROW(stage->configure(FrameInfo{8, 8, PixelFormat::Bgr8}), std::invalid_argument);
+}
