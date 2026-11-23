@@ -92,8 +92,8 @@ TEST(Engine, ChangesThePipelineWhileRunning)
 TEST(Engine, BypassesAStageThatRejectsTheFormat)
 {
     Engine engine;
-    engine.setInput(pattern());  // bgr8, but clahe needs gray8
-    engine.setPipeline(registry().parseChain("clahe ! invert"));
+    engine.setInput(pattern());  // bgr8, but otsu needs gray8
+    engine.setPipeline(registry().parseChain("threshold mode=otsu ! invert"));
     engine.start();
     const EngineStatus status = waitFor(engine, [](const EngineStatus& s) {
         return s.frames >= 3 && s.stages.size() == 2 && !s.stages[0].error.empty();

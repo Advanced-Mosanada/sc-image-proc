@@ -167,14 +167,3 @@ TEST(Edges, MatchesCannyAndAcceptsColor)
     EXPECT_EQ(runStage(*stage, color).format(), PixelFormat::Gray8);
     EXPECT_THROW(make("edges low=200 high=100"), std::invalid_argument);
 }
-
-TEST(Clahe, NeedsGrayAndMatchesOpenCv)
-{
-    const Frame input = randomFrame(FrameInfo{64, 48, PixelFormat::Gray8});
-    auto stage = make("clahe clip=3 tiles=4");
-    const Frame ours = runStage(*stage, input);
-    cv::Mat reference;
-    cv::createCLAHE(3.0, cv::Size(4, 4))->apply(scip::asMat(input), reference);
-    EXPECT_EQ(cv::norm(scip::asMat(ours), reference, cv::NORM_INF), 0.0);
-    EXPECT_THROW(stage->configure(FrameInfo{8, 8, PixelFormat::Bgr8}), std::invalid_argument);
-}

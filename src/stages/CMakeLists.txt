@@ -7,9 +7,16 @@
 #
 # To add a function: create a .cpp here (see README.md) and list it below.
 add_library(scip_stages OBJECT
+    # contrast
+    autolevels.cpp
     clahe.cpp
-    edges.cpp
+    equalize.cpp
+    levels.cpp
+    retinex.cpp
+    # spatial noise reduction
     gaussian_blur.cpp
+    # other
+    edges.cpp
     invert.cpp
     resize.cpp
     threshold.cpp
