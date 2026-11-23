@@ -1,0 +1,191 @@
+// The engine: frames flow while the configuration changes underneath.
+
+#include "scip/engine.hpp"
+
+#include <gtest/gtest.h>
+
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <stdexcept>
+#include <thread>
+
+using scip::Engine;
+using scip::EngineState;
+using scip::EngineStatus;
+using scip::FrameInfo;
+using scip::PixelFormat;
+using scip::StageRegistry;
+
+namespace {
+
+/// Poll status() until `done` holds; fails the test after `timeout`.
+EngineStatus waitFor(const Engine& engine,
+                     const std::function<bool(const EngineStatus&)>& done,
+                     std::chrono::milliseconds timeout = std::chrono::milliseconds(5000))
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    EngineStatus status = engine.status();
+    while (!done(status)) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            ADD_FAILURE() << "timed out; state " << scip::toString(status.state) << " ("
+                          << status.message << "), " << status.frames << " frames";
+            return status;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        status = engine.status();
+    }
+    return status;
+}
+
+scip::InputConfig pattern(const std::string& uri = "pattern:64x48", std::uint64_t frames = 0)
+{
+    scip::InputConfig input;
+    input.uri = uri;
+    input.options.maxFrames = frames;
+    input.maxFps = 500.0;  // fast tests
+    return input;
+}
+
+/// Frames counted after `n` more have been processed.
+auto atLeast(std::uint64_t n)
+{
+    return [n](const EngineStatus& s) { return s.state == EngineState::Running && s.frames >= n; };
+}
+
+const StageRegistry& registry()
+{
+    return StageRegistry::instance();
+}
+
+}  // namespace
+
+TEST(Engine, RunsInputThroughThePipeline)
+{
+    Engine engine;
+    engine.setInput(pattern());
+    engine.setPipeline(registry().parseChain("gray ! resize width=32 height=24"));
+    engine.start();
+    const EngineStatus status = waitFor(engine, atLeast(5));
+    EXPECT_EQ(status.inputInfo, (FrameInfo{64, 48, PixelFormat::Bgr8}));
+    EXPECT_EQ(status.outputInfo, (FrameInfo{32, 24, PixelFormat::Gray8}));
+    ASSERT_EQ(status.stages.size(), 2u);
+    EXPECT_TRUE(status.stages[0].active);
+    EXPECT_EQ(status.stages[1].name, "resize height=24 width=32");  // parameters sorted
+    engine.stop();
+    EXPECT_EQ(engine.status().state, EngineState::Idle);
+}
+
+TEST(Engine, ChangesThePipelineWhileRunning)
+{
+    Engine engine;
+    engine.setInput(pattern());
+    engine.start();
+    waitFor(engine, atLeast(2));
+    engine.addStage(scip::StageSpec{"gray", {}});
+    const EngineStatus status = waitFor(
+        engine, [](const EngineStatus& s) { return s.outputInfo.format == PixelFormat::Gray8; });
+    EXPECT_EQ(status.state, EngineState::Running);
+}
+
+TEST(Engine, BypassesAStageThatRejectsTheFormat)
+{
+    Engine engine;
+    engine.setInput(pattern());  // bgr8, but clahe needs gray8
+    engine.setPipeline(registry().parseChain("clahe ! invert"));
+    engine.start();
+    const EngineStatus status = waitFor(engine, [](const EngineStatus& s) {
+        return s.frames >= 3 && s.stages.size() == 2 && !s.stages[0].error.empty();
+    });
+    EXPECT_FALSE(status.stages[0].active);
+    EXPECT_TRUE(status.stages[1].active);  // the rest of the chain still runs
+    EXPECT_EQ(status.outputInfo.format, PixelFormat::Bgr8);
+}
+
+TEST(Engine, RejectsBadCommandsAtOnce)
+{
+    Engine engine;
+    EXPECT_THROW(engine.addStage(scip::StageSpec{"no-such-function", {}}), std::invalid_argument);
+    EXPECT_THROW(engine.addStage(scip::StageSpec{"blur", {{"ksize", std::int64_t{4}}}}),
+                 std::invalid_argument);
+    EXPECT_THROW(engine.setInput(pattern("/no/such/clip.mp4")), std::invalid_argument);
+    EXPECT_THROW(engine.setOutputs({"out.avi"}), std::invalid_argument);
+    EXPECT_THROW(engine.setOutputs({"a.png", "a.png"}), std::invalid_argument);
+    EXPECT_THROW(engine.removeStage(42), std::invalid_argument);
+    EXPECT_TRUE(engine.pipeline().empty());
+}
+
+TEST(Engine, UpdatesSomeParametersAndKeepsTheOthers)
+{
+    Engine engine;
+    const auto blur = engine.addStage(registry().parseChain("blur ksize=5").front());
+    const auto updated = engine.updateStage(blur.id, scip::ParamMap{{"sigma", 2.0}}, std::nullopt);
+    EXPECT_EQ(scip::formatSpec(updated.spec), "blur ksize=5 sigma=2");
+
+    EXPECT_THROW(engine.updateStage(blur.id, scip::ParamMap{{"ksize", std::int64_t{4}}}, false),
+                 std::invalid_argument);
+    EXPECT_TRUE(engine.pipeline().front().enabled);  // a failed update changes nothing
+
+    engine.updateStage(blur.id, std::nullopt, false);
+    EXPECT_FALSE(engine.pipeline().front().enabled);
+}
+
+TEST(Engine, MovesAndRemovesStagesById)
+{
+    Engine engine;
+    const auto entries = engine.setPipeline(registry().parseChain("gray ! invert ! blur"));
+    ASSERT_EQ(entries.size(), 3u);
+    engine.moveStage(entries[2].id, 0);
+    engine.removeStage(entries[1].id);
+    const auto pipeline = engine.pipeline();
+    ASSERT_EQ(pipeline.size(), 2u);
+    EXPECT_EQ(pipeline[0].spec.name, "blur");
+    EXPECT_EQ(pipeline[1].spec.name, "gray");
+    EXPECT_EQ(pipeline[1].id, entries[0].id);
+}
+
+TEST(Engine, ReportsAnInputThatCannotOpen)
+{
+    const auto path = std::filesystem::temp_directory_path() / "scip_test_broken.png";
+    std::ofstream(path) << "not an image";
+    Engine engine;
+    engine.setInput(pattern(path.string()));
+    engine.start();
+    const EngineStatus status =
+        waitFor(engine, [](const EngineStatus& s) { return s.state == EngineState::Error; });
+    EXPECT_FALSE(status.message.empty());
+
+    engine.setInput(pattern());  // recovers with a new input
+    waitFor(engine, atLeast(1));
+    std::filesystem::remove(path);
+}
+
+TEST(Engine, StopsWhenTheInputEnds)
+{
+    Engine engine;
+    engine.setInput(pattern("pattern:16x16", 3));
+    engine.start();
+    const EngineStatus status =
+        waitFor(engine, [](const EngineStatus& s) { return s.message == "input ended"; });
+    EXPECT_EQ(status.state, EngineState::Idle);
+    EXPECT_EQ(status.frames, 3u);
+}
+
+TEST(Engine, WritesOutputsAndClosesThemWhenRemoved)
+{
+    const auto path = std::filesystem::temp_directory_path() / "scip_test_engine.png";
+    std::filesystem::remove(path);
+    Engine engine;
+    engine.setInput(pattern());
+    engine.setPipeline(registry().parseChain("gray"));
+    engine.setOutputs({path.string()});
+    engine.start();
+    const EngineStatus status = waitFor(engine, [](const EngineStatus& s) {
+        return s.frames >= 3 && !s.outputs.empty() && s.outputs[0].active;
+    });
+    EXPECT_TRUE(status.outputs[0].error.empty());
+    engine.setOutputs({});  // the image sink writes its last frame on close
+    waitFor(engine, [&](const EngineStatus&) { return std::filesystem::exists(path); });
+    std::filesystem::remove(path);
+}
