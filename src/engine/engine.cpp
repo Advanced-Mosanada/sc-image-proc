@@ -62,6 +62,18 @@ struct ActiveOutput {
     std::string error;
 };
 
+/// Validate `spec` (throws std::invalid_argument) and store each given value
+/// in the type the function declares: 2 sent for a float parameter becomes
+/// 2.0, so the pipeline reports the same types as the function's ParamSpecs.
+StageSpec normalized(const StageRegistry& registry, StageSpec spec)
+{
+    const ParamMap resolved = registry.resolve(spec);
+    for (auto& [name, value] : spec.params) {
+        value = resolved.at(name);
+    }
+    return spec;
+}
+
 }  // namespace
 
 std::string_view toString(EngineState state)
@@ -550,13 +562,14 @@ std::vector<StageEntry> Engine::pipeline() const
 
 std::vector<StageEntry> Engine::setPipeline(const std::vector<StageSpec>& specs)
 {
+    std::vector<StageSpec> checked;
     for (const StageSpec& spec : specs) {
-        registry_.resolve(spec);  // throws for unknown functions / bad values
+        checked.push_back(normalized(registry_, spec));  // all or nothing
     }
     std::lock_guard lock(mutex_);
     stages_.clear();
-    for (const StageSpec& spec : specs) {
-        stages_.push_back(StageEntry{nextStageId_++, spec, true});
+    for (StageSpec& spec : checked) {
+        stages_.push_back(StageEntry{nextStageId_++, std::move(spec), true});
     }
     ++pipelineVersion_;
     changed();
@@ -565,9 +578,9 @@ std::vector<StageEntry> Engine::setPipeline(const std::vector<StageSpec>& specs)
 
 StageEntry Engine::addStage(const StageSpec& spec, int index, bool enabled)
 {
-    registry_.resolve(spec);
+    StageSpec checked = normalized(registry_, spec);
     std::lock_guard lock(mutex_);
-    const StageEntry entry{nextStageId_++, spec, enabled};
+    const StageEntry entry{nextStageId_++, std::move(checked), enabled};
     const auto size = static_cast<int>(stages_.size());
     const int at = index < 0 || index > size ? size : index;
     stages_.insert(stages_.begin() + at, entry);
@@ -608,7 +621,7 @@ Engine::updateStage(int id, const std::optional<ParamMap>& params, std::optional
         for (const auto& [name, value] : *params) {
             spec.params[name] = value;
         }
-        registry_.resolve(spec);  // validate before changing anything
+        spec = normalized(registry_, spec);  // validate before changing anything
     }
     entry.spec = std::move(spec);
     if (enabled) {
