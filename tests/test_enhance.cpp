@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/photo.hpp>
 
 #include <stdexcept>
 #include <string>
@@ -88,6 +89,10 @@ const char* const kNewFunctions[] = {
     "levels",
     "retinex",
     "clahe",
+    "median",
+    "bilateral",
+    "guided",
+    "nlmeans",
 };
 
 }  // namespace
@@ -230,4 +235,60 @@ TEST(Contrast, RetinexEvensOutUnevenLighting)
     const double after = std::abs(mean(out.colRange(0, 64)) - mean(out.colRange(192, 256)));
     EXPECT_LT(after, before * 0.5);
     EXPECT_GT(deviation(out.colRange(0, 64)), deviation(in.colRange(0, 64)));  // shadow detail up
+}
+
+// --- spatial noise reduction ----------------------------------------------------
+
+TEST(Denoise, MedianRemovesImpulseNoise)
+{
+    Frame frame = uniform(FrameInfo{64, 48, PixelFormat::Gray8}, 128);
+    for (int y = 2; y < 48; y += 7) {
+        for (int x = 3; x < 64; x += 9) {
+            frame.row(y)[x] = (x + y) % 2 ? 255 : 0;  // isolated hot and dead pixels
+        }
+    }
+    const Frame out = run(*make("median ksize=3"), frame);
+    EXPECT_EQ(cv::countNonZero(scip::asMat(out) != 128), 0);
+}
+
+TEST(Denoise, BilateralMatchesOpenCv)
+{
+    const Frame input = noisy(FrameInfo{40, 30, PixelFormat::Bgr8}, 120, 15.0, 4);
+    cv::Mat reference;
+    cv::bilateralFilter(scip::asMat(input), reference, 5, 30.0, 5.0, cv::BORDER_REFLECT_101);
+    const Frame out = run(*make("bilateral diameter=5 sigma_color=30 sigma_space=5"), input);
+    EXPECT_EQ(cv::norm(scip::asMat(out), reference, cv::NORM_INF), 0.0);
+}
+
+TEST(Denoise, EdgePreservingFiltersSmoothNoiseButKeepEdges)
+{
+    // A step from 50 to 200 with noise of sigma 8 on top.
+    const FrameInfo info{80, 40, PixelFormat::Gray8};
+    Frame input = step(info, 50, 200);
+    cv::Mat view = scip::asMat(input);
+    cv::Mat withNoise;
+    view.convertTo(withNoise, CV_16S);
+    cv::Mat noise;
+    scip::asMat(noisy(info, 128, 8.0, 5)).convertTo(noise, CV_16S, 1.0, -128.0);
+    withNoise += noise;
+    withNoise.convertTo(view, CV_8U);
+
+    for (const char* filter : {"guided radius=4 eps=0.01", "bilateral", "nlmeans strength=10"}) {
+        const Frame outFrame = run(*make(filter), input);
+        const cv::Mat out = scip::asMat(outFrame);
+        EXPECT_LT(deviation(out.colRange(5, 30)), deviation(view.colRange(5, 30)) * 0.6) << filter;
+        // The edge stays a step: both sides keep their level.
+        EXPECT_NEAR(mean(out.colRange(5, 30)), 50.0, 4.0) << filter;
+        EXPECT_NEAR(mean(out.colRange(50, 75)), 200.0, 4.0) << filter;
+        EXPECT_GT(mean(out.colRange(41, 43)) - mean(out.colRange(37, 39)), 120.0) << filter;
+    }
+}
+
+TEST(Denoise, NlMeansMatchesOpenCv)
+{
+    const Frame input = noisy(FrameInfo{48, 32, PixelFormat::Gray8}, 100, 10.0, 6);
+    cv::Mat reference;
+    cv::fastNlMeansDenoising(scip::asMat(input), reference, 5.0f, 7, 11);
+    const Frame out = run(*make("nlmeans strength=5 search=11"), input);
+    EXPECT_EQ(cv::norm(scip::asMat(out), reference, cv::NORM_INF), 0.0);
 }

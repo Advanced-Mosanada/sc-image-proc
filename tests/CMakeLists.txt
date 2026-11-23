@@ -23,7 +23,7 @@ add_executable(scip_tests
     test_stages.cpp
     test_stats.cpp)
 target_link_libraries(scip_tests PRIVATE
-    scip_stages scip_gststages scip_aipc scip_engine scip_io scip_cvinterop opencv_imgproc
+    scip_stages scip_gststages scip_aipc scip_engine scip_io scip_cvinterop opencv_imgproc opencv_photo
     nlohmann_json::nlohmann_json GTest::gtest_main)
 scip_set_warnings(scip_tests)
 

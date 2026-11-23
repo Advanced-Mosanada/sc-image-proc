@@ -37,7 +37,7 @@ include(GNUInstallDirs)
 # ---------------------------------------------------------------------------
 # The board image has OpenCV 4.4; the PC may have a newer one. Asking for 4.4
 # here and building the imx8mp preset regularly keeps us on the common API.
-find_package(OpenCV 4.4 REQUIRED COMPONENTS core imgproc imgcodecs)
+find_package(OpenCV 4.4 REQUIRED COMPONENTS core imgproc imgcodecs photo)
 message(STATUS "OpenCV ${OpenCV_VERSION} from ${OpenCV_DIR}")
 
 # GStreamer 1.18 is what the board image has. On Ubuntu:

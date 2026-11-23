@@ -37,7 +37,7 @@ StageInfo makeInfo()
     info.name = "blur";
     info.title = "Gaussian blur";
     info.description = "Smooths the image with a Gaussian kernel (OpenCV)";
-    info.category = "filter";
+    info.category = "denoise";
     info.params = {
         param::integer("ksize", "Kernel size (odd)", 5, 3, 31, 2, "px"),
         param::number("sigma",

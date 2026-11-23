@@ -14,7 +14,11 @@ add_library(scip_stages OBJECT
     levels.cpp
     retinex.cpp
     # spatial noise reduction
+    bilateral.cpp
     gaussian_blur.cpp
+    guided.cpp
+    median.cpp
+    nlmeans.cpp
     # other
     edges.cpp
     invert.cpp
@@ -25,5 +29,5 @@ add_library(scip::stages ALIAS scip_stages)
 
 target_link_libraries(scip_stages
     PUBLIC scip_core
-    PRIVATE scip_cvinterop opencv_imgproc)
+    PRIVATE scip_cvinterop opencv_imgproc opencv_photo)
 scip_set_warnings(scip_stages)
