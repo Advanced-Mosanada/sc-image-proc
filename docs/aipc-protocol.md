@@ -1,4 +1,4 @@
-# AIPC: AMC Image Proc Control, protocol version 1.0
+# AIPC: AMC Image Proc Control, protocol version 1.1
 
 AIPC is how a host (the GUI, a script, `nc`) controls a running `scipd` on the
 PC or on a board: what video comes in, which functions process it, where the
@@ -19,6 +19,7 @@ host (GUI)                               target (scipd)
    |  UDP 5000  H.264/RTP video  -------->  |    input  rtp://:5000
    |  or TCP 5000  raw video (GDP)  ----->  |    input  tcp://:5000   (lossless)
    |  <--------  H.264/RTP video  UDP 5002  |    output udp:HOST:5002
+   |  <--------  H.264/RTP video  UDP 5004  |    input output udp:HOST:5004 (the input)
 ```
 
 Video never travels over the control connection; it uses standard RTP
@@ -317,7 +318,8 @@ To reset a parameter to its default, `pipeline.update` it with the
 → `Input`:
 
 ```json
-{"uri": "rtp://:5000", "loop": false, "realtime": true, "gray": false, "max_fps": 0, "max_frames": 0}
+{"uri": "rtp://:5000", "loop": false, "realtime": true, "gray": false, "max_fps": 0, "max_frames": 0,
+ "player": false}
 ```
 
 | field | |
@@ -328,6 +330,7 @@ To reset a parameter to its default, `pipeline.update` it with the
 | `gray` | decode straight to gray8 (cheaper when the pipeline starts with `gray`) |
 | `max_fps` | limit non-live inputs; 0 = no limit (patterns and images default to 30) |
 | `max_frames` | stop after this many frames; 0 = never |
+| `player` | video files: control it like a player (section 5.5): it opens paused on its first frame and stays open at its end |
 
 #### `input.set`
 
@@ -352,14 +355,60 @@ again restarts it.
 frame rate. Without a size the camera's largest mode is used, which can be
 slow: offer the user the modes.
 
-### 5.5 output
+### 5.5 player
 
-The target sends the processed video to zero or more outputs at once.
+A video file on the target, opened with `input.set` and `"player": true`, is
+controlled like a media player: the host plays the file without sending it,
+and can watch it through an input output (5.6). Without a player input these
+methods fail with -32000, except `playback.get` (`"available": false`).
 
 | method | params | result |
 |---|---|---|
-| `output.get` | | `{"outputs": ["display:40", "udp:192.168.50.1:5002"]}` |
-| `output.set` | `outputs`: `[uri, ...]` | same |
+| `playback.get` | | `Playback` |
+| `playback.play` | | `Playback`; at the end, plays again from the start (of the A-B range) |
+| `playback.pause` | | `Playback` |
+| `playback.seek` | `position`: seconds | `Playback`; while paused, the frame it lands on is processed and sent |
+| `playback.set` | `rate`?, `loop`?, `a`?, `b`? | `Playback`; `a`/`b` in seconds, both or neither, `null` clears them |
+
+`Playback`:
+
+```json
+{"available": true, "state": "playing", "position": 12.48, "duration": 60.0,
+ "rate": 1.0, "loop": false, "a": null, "b": null}
+```
+
+| field | |
+|---|---|
+| `state` | `playing`, `paused`, or `ended` (paused at the end) |
+| `position` | seconds, of the last frame processed |
+| `loop` | the whole video; with `a` and `b` it loops between them (and plays only that) |
+
+The same object, without `available`, is `playback` in `Status` (5.7): a host
+moves its position slider from there and between two updates by itself
+(`position + elapsed × rate` while playing).
+
+#### `files.list`
+
+`{"path"?: folder}` → the folders, videos and images in a folder of the
+target, to choose a file to play; without `path`, the folder of the current
+input file, else the home folder. Hidden entries are left out.
+
+```json
+{"path": "/home/root/videos", "parent": "/home/root",
+ "entries": [{"name": "day", "path": "/home/root/videos/day", "kind": "folder", "size": 0},
+             {"name": "clip.mp4", "path": "/home/root/videos/clip.mp4", "kind": "video", "size": 4823112}]}
+```
+
+### 5.6 output
+
+The target sends the processed video to zero or more outputs at once, and
+its input, as it comes in, to zero or more *input outputs* (to watch a
+camera or a file next to the result; they cost an encoder on the target).
+
+| method | params | result |
+|---|---|---|
+| `output.get` | | `{"outputs": ["display:40", "udp:192.168.50.1:5002"], "input_outputs": ["udp:192.168.50.1:5004"]}` |
+| `output.set` | `outputs`?: `[uri, ...]`, `input_outputs`?: `[uri, ...]` (at least one; a list left out stays) | same |
 | `output.add` | `uri` | same; -32000 if already present |
 | `output.remove` | `uri` | same; -32001 if not present |
 | `output.displays` | | see below |
@@ -383,7 +432,7 @@ changes (e.g. after adding `resize`). One that fails is dropped and its
 With `window_system: true` (a PC desktop), `display` opens a window and the
 connector list is informative only.
 
-### 5.6 stats
+### 5.7 stats
 
 #### `stats.get`
 
@@ -405,22 +454,27 @@ connector list is informative only.
   ],
   "outputs": [
     {"uri": "udp:192.168.50.1:5002", "description": "udp 192.168.50.1:5002 (vpuenc_h264)", "active": true, "error": ""}
-  ]
+  ],
+  "input_outputs": [],
+  "playback": null
 }
 ```
+
+`playback` is a `Playback` (5.5) when the input is a player, else `null`.
 
 | `state` | |
 |---|---|
 | `idle` | no input, or it ended (`message`: `"input ended"`) |
 | `waiting` | input open, no frames (yet): a network sender has not started or paused |
 | `running` | frames are flowing |
+| `paused` | a player input is paused (`message`: `"end of the video"` at its end) |
 | `error` | the input failed; `message` says why |
 
 Timings are means over the last ~120 frames; `fps` counts the last second.
 `read_ms` includes waiting for a live source, so on a 30 fps stream it is
 about 33 ms even when decoding is fast.
 
-### 5.7 events
+### 5.8 events
 
 #### `events.subscribe`
 
@@ -435,7 +489,7 @@ about 33 ms even when decoding is fast.
 |---|---|---|---|
 | `stats` | `event.stats` | `Status` | every `interval_ms` (100 or more) |
 | `state` | `event.state` | `{"state", "message"}` | when the state or message changes |
-| `config` | `event.config` | `{"what": "pipeline" \| "input" \| "outputs"}` | after any client changed it: fetch it again with `*.get` |
+| `config` | `event.config` | `{"what": "pipeline" \| "input" \| "outputs" \| "playback"}` | after any client changed it: fetch it again with `*.get` |
 
 Subscriptions belong to the connection and end with it.
 
@@ -486,3 +540,4 @@ drop.
 | version | |
 |---|---|
 | 1.0 | first version |
+| 1.1 | `tcp://` input (raw frames); player inputs: `input.set` `player`, `playback.*`, `files.list`, state `paused`; `input_outputs` in `output.*` and `Status` |

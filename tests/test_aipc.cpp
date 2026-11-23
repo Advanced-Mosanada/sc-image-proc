@@ -8,6 +8,8 @@
 
 #include <arpa/inet.h>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <netinet/in.h>
 #include <nlohmann/json.hpp>
 #include <poll.h>
@@ -179,6 +181,69 @@ TEST(Aipc, SetsInputAndOutputs)
 
     EXPECT_TRUE(f.call("input.devices")["cameras"].is_array());
     EXPECT_TRUE(f.call("output.displays")["displays"].is_array());
+}
+
+TEST(Aipc, SendsTheInputToOutputsToo)
+{
+    Fixture f;
+    Json result = f.call("output.set", {{"input_outputs", {"udp:127.0.0.1:5004"}}});
+    EXPECT_EQ(result["input_outputs"], Json::array({"udp:127.0.0.1:5004"}));
+    EXPECT_EQ(result["outputs"], Json::array());  // left alone
+    result = f.call("output.set", {{"outputs", {"udp:127.0.0.1:5002"}}});
+    EXPECT_EQ(result["input_outputs"].size(), 1U);  // left alone
+    EXPECT_EQ(f.errorCode("output.set", Json::object()), scip::aipc::kInvalidParams);
+    // Nothing changes when one of the lists is bad.
+    EXPECT_EQ(f.errorCode("output.set", {{"outputs", Json::array()}, {"input_outputs", {"bad:"}}}),
+              scip::aipc::kRejected);
+    EXPECT_EQ(f.call("output.get")["outputs"].size(), 1U);
+    EXPECT_TRUE(f.call("stats.get")["input_outputs"].is_array());
+}
+
+TEST(Aipc, ControlsAPlayerInput)
+{
+    Fixture f;
+    // Without a player input, the player methods say why.
+    EXPECT_EQ(f.errorCode("playback.play"), scip::aipc::kRejected);
+    EXPECT_FALSE(f.call("playback.get")["available"].get<bool>());
+
+    const auto dir = std::filesystem::temp_directory_path() / "scip_aipc_files";
+    std::filesystem::create_directories(dir / "sub");
+    const auto video = dir / "clip.mp4";
+    std::ofstream(video).put('x');  // input.set only checks that it exists
+    std::ofstream(dir / "notes.txt").put('x');
+    std::ofstream(dir / ".hidden.mp4").put('x');
+
+    // files.list: folders first, then videos and images; nothing else.
+    Json listing = f.call("files.list", {{"path", dir.string()}});
+    EXPECT_EQ(listing["path"], dir.string());
+    EXPECT_EQ(listing["parent"], dir.parent_path().string());
+    ASSERT_EQ(listing["entries"].size(), 2U) << listing.dump();
+    EXPECT_EQ(listing["entries"][0]["kind"], "folder");
+    EXPECT_EQ(listing["entries"][1]["name"], "clip.mp4");
+    EXPECT_EQ(listing["entries"][1]["kind"], "video");
+    EXPECT_EQ(listing["entries"][1]["path"], video.string());
+    EXPECT_EQ(f.errorCode("files.list", {{"path", (dir / "nope").string()}}),
+              scip::aipc::kRejected);
+
+    Json input = f.call("input.set", {{"uri", video.string()}, {"player", true}});
+    EXPECT_TRUE(input["player"].get<bool>());
+    // Without a path, the listing starts in the input's folder.
+    EXPECT_EQ(f.call("files.list")["path"], dir.string());
+
+    Json state = f.call("playback.get");
+    EXPECT_TRUE(state["available"].get<bool>());
+    EXPECT_EQ(state["state"], "paused");  // a new video starts paused
+    EXPECT_EQ(f.call("playback.play")["state"], "playing");
+    state = f.call("playback.set", {{"rate", 2.0}, {"a", 1.0}, {"b", 2.5}});
+    EXPECT_EQ(state["rate"], 2.0);
+    EXPECT_EQ(state["a"], 1.0);
+    EXPECT_EQ(state["b"], 2.5);
+    EXPECT_TRUE(f.call("playback.set", {{"a", nullptr}, {"b", nullptr}})["a"].is_null());
+    EXPECT_EQ(f.errorCode("playback.set", {{"a", 3.0}, {"b", 1.0}}), scip::aipc::kRejected);
+    EXPECT_EQ(f.errorCode("playback.set", {{"rate", 0}}), scip::aipc::kRejected);
+    EXPECT_EQ(f.errorCode("playback.seek", {{"position", -2}}), scip::aipc::kRejected);
+    EXPECT_EQ(f.call("playback.pause")["state"], "paused");
+    std::filesystem::remove_all(dir);
 }
 
 TEST(Aipc, SendsEventsToSubscribers)

@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <optional>
@@ -60,9 +62,30 @@ StageSpec specFromJson(const Json& item)
     return spec;
 }
 
-Json outputsJson(const std::vector<std::string>& outputs)
+/// An optional number that may be null ("no value"): {"a": null} clears A.
+std::optional<double> optionalNumber(const Json& params, const char* name)
 {
-    return {{"outputs", outputs}};
+    const Json& value = params.at(name);
+    if (value.is_null()) {
+        return std::nullopt;
+    }
+    if (!value.is_number()) {
+        throw RpcError(kInvalidParams, std::string("'") + name + "' must be a number or null");
+    }
+    return value.get<double>();
+}
+
+/// Where files.list starts without a path: the current input's folder, else home.
+std::string startFolder(const std::string& inputUri)
+{
+    namespace fs = std::filesystem;
+    std::error_code error;
+    if (!inputUri.empty() && inputUri.find(':') == std::string::npos &&
+        fs::is_regular_file(inputUri, error)) {
+        return fs::absolute(inputUri).parent_path().string();
+    }
+    const char* home = std::getenv("HOME");
+    return home != nullptr && fs::is_directory(home, error) ? home : "/";
 }
 
 }  // namespace
@@ -99,6 +122,47 @@ struct Service::Impl {
                 stages.begin(), stages.end(), [id](const StageEntry& e) { return e.id == id; })) {
             throw RpcError(kNotFound, "no stage with id " + std::to_string(id));
         }
+    }
+
+    Json outputsJson() const
+    {
+        return {{"outputs", engine.outputs()}, {"input_outputs", engine.inputOutputs()}};
+    }
+
+    /// The player's settings; kRejected unless the input is a player.
+    PlaybackConfig playerConfig() const
+    {
+        if (!engine.input().options.player) {
+            throw RpcError(kRejected,
+                           "the input is not a player: open a video file with \"player\": true");
+        }
+        return engine.playback();
+    }
+
+    Json setPlayback(const PlaybackConfig& config)
+    {
+        engine.setPlayback(config);
+        configChanged("playback");
+        return playbackJson();
+    }
+
+    /// The settings as requested, with the position the worker last reported.
+    Json playbackJson() const
+    {
+        const PlaybackConfig config = engine.playback();
+        PlaybackState state;
+        if (const auto seen = engine.status().playback) {
+            state = *seen;
+        }
+        state.ended = state.ended && config.paused;
+        state.paused = config.paused;
+        state.rate = config.rate;
+        state.loop = config.loop;
+        state.a = config.a;
+        state.b = config.b;
+        Json result = toJson(state);
+        result["available"] = engine.input().options.player;
+        return result;
     }
 
     Json pipelineWith(const StageEntry& stage) const
@@ -246,8 +310,12 @@ void Service::Impl::addMethods()
             throw RpcError(kRejected, "max_frames must be >= 0");
         }
         input.options.maxFrames = static_cast<std::uint64_t>(maxFrames);
+        input.options.player = getBool(params, "player", false);
         engine.setInput(input);
         configChanged("input");
+        if (input.options.player) {
+            configChanged("playback");
+        }
         return toJson(engine.input());
     });
     add("input.devices", [](const Json&, Session&) {
@@ -258,17 +326,94 @@ void Service::Impl::addMethods()
         return Json{{"cameras", cameras}};
     });
 
-    // --- output --------------------------------------------------------------
-    add("output.get", [this](const Json&, Session&) { return outputsJson(engine.outputs()); });
-    add("output.set", [this](const Json& params, Session&) {
-        const Json& list = requireField(params, "outputs");
-        if (!list.is_array() ||
-            !std::all_of(list.begin(), list.end(), [](const Json& j) { return j.is_string(); })) {
-            throw RpcError(kInvalidParams, "'outputs' must be an array of strings");
+    // --- player (an input opened with "player": true) ---------------------------
+    add("playback.get", [this](const Json&, Session&) { return playbackJson(); });
+    add("playback.play", [this](const Json&, Session&) {
+        PlaybackConfig config = playerConfig();
+        config.paused = false;
+        return setPlayback(config);
+    });
+    add("playback.pause", [this](const Json&, Session&) {
+        PlaybackConfig config = playerConfig();
+        config.paused = true;
+        return setPlayback(config);
+    });
+    add("playback.seek", [this](const Json& params, Session&) {
+        playerConfig();
+        engine.seek(getNumber(params, "position", -1.0));
+        return playbackJson();
+    });
+    add("playback.set", [this](const Json& params, Session&) {
+        PlaybackConfig config = playerConfig();
+        config.rate = getNumber(params, "rate", config.rate);
+        config.loop = getBool(params, "loop", config.loop);
+        if (params.contains("a") || params.contains("b")) {
+            config.a = params.contains("a") ? optionalNumber(params, "a") : config.a;
+            config.b = params.contains("b") ? optionalNumber(params, "b") : config.b;
         }
-        engine.setOutputs(list.get<std::vector<std::string>>());
+        return setPlayback(config);
+    });
+
+    // --- files on the target ---------------------------------------------------
+    add("files.list", [this](const Json& params, Session&) {
+        namespace fs = std::filesystem;
+        const std::string folder = params.contains("path") && !getString(params, "path").empty()
+                                       ? getString(params, "path")
+                                       : startFolder(engine.input().uri);
+        const fs::path path = fs::absolute(folder).lexically_normal();
+        Json entries = Json::array();
+        for (const io::MediaEntry& entry : io::listMediaFiles(path.string())) {
+            entries.push_back({
+                {"name", entry.name},
+                {"path", entry.path},
+                {"kind", entry.kind},
+                {"size", entry.size},
+            });
+        }
+        const fs::path parent = path.has_relative_path() ? path.parent_path() : fs::path();
+        return Json{{"path", path.string()}, {"parent", parent.string()}, {"entries", entries}};
+    });
+
+    // --- output --------------------------------------------------------------
+    add("output.get", [this](const Json&, Session&) { return outputsJson(); });
+    add("output.set", [this](const Json& params, Session&) {
+        const auto list = [&](const char* name) {
+            const Json& value = params.at(name);
+            if (!value.is_array() || !std::all_of(value.begin(), value.end(), [](const Json& j) {
+                    return j.is_string();
+                })) {
+                throw RpcError(kInvalidParams,
+                               std::string("'") + name + "' must be an array of strings");
+            }
+            return value.get<std::vector<std::string>>();
+        };
+        if (!params.contains("outputs") && !params.contains("input_outputs")) {
+            throw RpcError(kInvalidParams, "give 'outputs' and/or 'input_outputs'");
+        }
+        // Check both before changing either.
+        std::optional<std::vector<std::string>> outputs;
+        std::optional<std::vector<std::string>> inputOutputs;
+        if (params.contains("outputs")) {
+            outputs = list("outputs");
+        }
+        if (params.contains("input_outputs")) {
+            inputOutputs = list("input_outputs");
+        }
+        for (const auto* uris : {&outputs, &inputOutputs}) {
+            if (*uris) {
+                for (const std::string& uri : **uris) {
+                    io::validateSinkUri(uri);
+                }
+            }
+        }
+        if (outputs) {
+            engine.setOutputs(*outputs);
+        }
+        if (inputOutputs) {
+            engine.setInputOutputs(*inputOutputs);
+        }
         configChanged("outputs");
-        return outputsJson(engine.outputs());
+        return outputsJson();
     });
     add("output.add", [this](const Json& params, Session&) {
         const std::string uri = getString(params, "uri");
@@ -279,7 +424,7 @@ void Service::Impl::addMethods()
         outputs.push_back(uri);
         engine.setOutputs(outputs);
         configChanged("outputs");
-        return outputsJson(engine.outputs());
+        return outputsJson();
     });
     add("output.remove", [this](const Json& params, Session&) {
         const std::string uri = getString(params, "uri");
@@ -291,7 +436,7 @@ void Service::Impl::addMethods()
         outputs.erase(it);
         engine.setOutputs(outputs);
         configChanged("outputs");
-        return outputsJson(engine.outputs());
+        return outputsJson();
     });
     add("output.displays", [](const Json&, Session&) {
         Json displays = Json::array();

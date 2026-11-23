@@ -130,6 +130,36 @@ Json toJson(const InputConfig& input)
         {"gray", input.options.gray},
         {"max_fps", input.maxFps},
         {"max_frames", input.options.maxFrames},
+        {"player", input.options.player},
+    };
+}
+
+Json toJson(const PlaybackState& state)
+{
+    const auto optional = [](const std::optional<double>& value) {
+        return value ? Json(rounded(*value, 0.001)) : Json(nullptr);
+    };
+    return {
+        {"state",
+         state.ended    ? "ended"
+         : state.paused ? "paused"
+                        : "playing"},
+        {"position", rounded(state.position, 0.001)},
+        {"duration", rounded(state.duration, 0.001)},
+        {"rate", state.rate},
+        {"loop", state.loop},
+        {"a", optional(state.a)},
+        {"b", optional(state.b)},
+    };
+}
+
+Json toJson(const OutputStatus& output)
+{
+    return {
+        {"uri", output.uri},
+        {"description", output.description},
+        {"active", output.active},
+        {"error", output.error},
     };
 }
 
@@ -149,12 +179,11 @@ Json toJson(const EngineStatus& status)
     }
     Json outputs = Json::array();
     for (const OutputStatus& o : status.outputs) {
-        outputs.push_back({
-            {"uri", o.uri},
-            {"description", o.description},
-            {"active", o.active},
-            {"error", o.error},
-        });
+        outputs.push_back(toJson(o));
+    }
+    Json inputOutputs = Json::array();
+    for (const OutputStatus& o : status.inputOutputs) {
+        inputOutputs.push_back(toJson(o));
     }
     return {
         {"state", std::string(toString(status.state))},
@@ -178,6 +207,8 @@ Json toJson(const EngineStatus& status)
          }},
         {"stages", stages},
         {"outputs", outputs},
+        {"input_outputs", inputOutputs},
+        {"playback", status.playback ? toJson(*status.playback) : Json(nullptr)},
     };
 }
 

@@ -36,6 +36,8 @@ Json toJson(const StageInfo& info);
 Json toJson(const StageEntry& entry);
 Json toJson(const FrameInfo& info);
 Json toJson(const InputConfig& input);
+Json toJson(const PlaybackState& state);
+Json toJson(const OutputStatus& output);
 Json toJson(const EngineStatus& status);
 Json toJson(const io::VideoDevice& device);
 Json toJson(const io::DisplayOutput& display);
