@@ -124,11 +124,18 @@ def test_sends_raw_frames_over_tcp(clip):
     assert settings.megabits(720, 576, 25) == pytest.approx(124.4, abs=0.1)  # PAL I420
     streamer = media.Streamer(settings=settings)
     streamer.set_destination("127.0.0.1", port)
-    streamer.open(clip)
-    streamer.play()
-    run_for(1.0, streamer, receiver)
-    streamer.close()
-    receiver.stop()
+    try:  # always close: an open TCP pipeline would keep the test process alive
+        streamer.open(clip)
+        streamer.seek(1.0)  # paused: the frame shown is sent, so the target shows it too
+        run_for(0.3, streamer, receiver)
+        assert len(receiver.frames) == 1
+        streamer.play()
+        run_for(1.0, streamer, receiver)
+        streamer.seek(0.5)  # seeks while playing must not block
+        run_for(0.3, streamer, receiver)
+    finally:
+        streamer.close()
+        receiver.stop()
     assert len(receiver.frames) > 20
     assert receiver.frames[-1] == ("I420", 320, 240)  # every pixel, as decoded
 

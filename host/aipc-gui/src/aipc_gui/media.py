@@ -190,6 +190,12 @@ class Streamer:
         self.a: float | None = None  # A-B loop, seconds
         self.b: float | None = None
         self.broken = False  # the connection to the target failed: reconnect on play
+        # Raw mode: frames leave the player's pipeline through an appsink and are
+        # sent by this one (appsrc ! gdppay ! tcpclientsink). Kept apart because a
+        # flushing seek never returns when gdppay sits behind the preview's tee.
+        self.raw_sender = None
+        self._raw_caps = None
+        self._raw_sent_pts: int | None = None
 
     # --- file ---------------------------------------------------------------
 
@@ -211,20 +217,15 @@ class Streamer:
             f"! video/x-raw,format=RGBx,width={self.preview_width},pixel-aspect-ratio=1/1 "
             "! appsink name=preview max-buffers=1 drop=true sync=true"
         )
-        # Raw: the TCP connection is made here; the target may still be (re)opening
-        # its input, so try again for a moment.
-        deadline = time.monotonic() + (CONNECT_TIMEOUT if self.settings.raw else 0)
-        while True:
-            self.pipeline = Gst.parse_launch(description)
-            self.pipeline.set_state(Gst.State.PAUSED)
-            change, _, _ = self.pipeline.get_state(10 * SECOND)
-            if change != Gst.StateChangeReturn.FAILURE:
-                break
+        if self.settings.raw:
+            self._connect_raw()
+        self.pipeline = Gst.parse_launch(description)
+        self.pipeline.set_state(Gst.State.PAUSED)
+        change, _, _ = self.pipeline.get_state(10 * SECOND)
+        if change == Gst.StateChangeReturn.FAILURE:
             error = self._pop_error() or "cannot play this file"
             self.close()
-            if time.monotonic() > deadline or "connect" not in error.lower():
-                raise RuntimeError(error)
-            time.sleep(0.2)
+            raise RuntimeError(error)
         self.info = self._media_info(str(path))
         self.state = "paused"
         self.a = self.b = None
@@ -235,6 +236,9 @@ class Streamer:
         if self.pipeline is not None:
             self.pipeline.set_state(Gst.State.NULL)
             self.pipeline = None
+        if self.raw_sender is not None:
+            self.raw_sender.set_state(Gst.State.NULL)
+            self.raw_sender = None
         self.state = "closed"
         self.info = None
 
@@ -345,7 +349,15 @@ class Streamer:
         frame = _pull_frame(self.pipeline, "preview")
         if frame is not None and self.on_frame is not None:
             self.on_frame(frame)
-        bus = self.pipeline.get_bus()
+        if self.raw_sender is not None:
+            self._forward_raw()
+        buses = [self.pipeline.get_bus()]
+        if self.raw_sender is not None:
+            buses.append(self.raw_sender.get_bus())
+        for bus in buses:
+            self._handle(bus)
+
+    def _handle(self, bus) -> None:
         while (message := bus.pop()) is not None:
             if message.type == Gst.MessageType.SEGMENT_DONE:
                 start, end = self._range()
@@ -369,14 +381,59 @@ class Streamer:
         if st.raw:
             if st.raw_format not in RAW_FORMATS:
                 raise ValueError(f"raw format must be one of {', '.join(RAW_FORMATS)}")
+            # Paced here (sync=true); _forward_raw() hands the frames on.
             return (
-                f"videoconvert ! video/x-raw,format={st.raw_format} ! gdppay "
-                f"! tcpclientsink name=tcp host={self.host} port={self.port} sync=true"
+                f"videoconvert ! video/x-raw,format={st.raw_format} "
+                "! appsink name=raw max-buffers=4 drop=false sync=true"
             )
         return (
             f"{self._encoder()} ! rtph264pay config-interval=1 pt=96 "
             f"! udpsink name=udp host={self.host} port={self.port} sync=true"
         )
+
+    def _connect_raw(self) -> None:
+        """Open the TCP connection to the target's tcp:// input. The target may
+        still be (re)opening it, so try again for a moment."""
+        deadline = time.monotonic() + CONNECT_TIMEOUT
+        while True:
+            sender = Gst.parse_launch(
+                "appsrc name=src format=time ! gdppay "
+                f"! tcpclientsink host={self.host} port={self.port} sync=false"
+            )
+            if sender.set_state(Gst.State.PLAYING) != Gst.StateChangeReturn.FAILURE:
+                self.raw_sender, self._raw_caps, self._raw_sent_pts = sender, None, None
+                return
+            message = sender.get_bus().pop_filtered(Gst.MessageType.ERROR)
+            sender.set_state(Gst.State.NULL)
+            if time.monotonic() > deadline:
+                error = _error_text(message) if message else "cannot connect"
+                raise RuntimeError(f"raw video to {self.host}:{self.port}: {error}")
+            time.sleep(0.2)
+
+    def _forward_raw(self) -> None:
+        """Pass the decoded frames to the sender, by reference (no copy). While
+        paused, the frame shown after a seek is sent too, so the target shows
+        where the video is."""
+        sink = self.pipeline.get_by_name("raw")
+        samples = []
+        if self.state != "playing":
+            # Paused: the frame on show is the preroll. (Pulling a sample while
+            # paused would discard it.)
+            preroll = sink.emit("try-pull-preroll", 0)
+            if preroll is not None and preroll.get_buffer().pts != self._raw_sent_pts:
+                samples.append(preroll)
+        else:
+            while (sample := sink.emit("try-pull-sample", 0)) is not None:
+                samples.append(sample)
+        source = self.raw_sender.get_by_name("src")
+        for sample in samples:
+            caps = sample.get_caps()
+            if self._raw_caps is None or not caps.is_equal(self._raw_caps):
+                source.set_property("caps", caps)
+                self._raw_caps = caps
+            buffer = sample.get_buffer()
+            self._raw_sent_pts = buffer.pts
+            source.emit("push-buffer", buffer)
 
     def _encoder(self) -> str:
         # Software H.264 tuned for latency: no B-frames, and a key frame every
