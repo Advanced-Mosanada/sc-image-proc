@@ -46,7 +46,8 @@ bool isStillSource(const std::string& uri);
 
 /// Open a sink for frames of format `info`. `fps` (0 = unknown, 30 is assumed)
 /// sets timestamps for encoded outputs.
-///   display                       window on the PC, the screen (KMS) on the board
+///   display[:CONNECTOR]           window on the PC, the screen (KMS) on the board;
+///                                 CONNECTOR picks the output (modetest -M imx-drm -c)
 ///   udp:HOST:PORT                 H.264 over RTP/UDP, e.g. to watch the board on the PC
 ///   <video file>                  .mp4 / .mkv, H.264 (hardware encoder when available)
 ///   <image file>                  .png/.jpg/...: the LAST frame is written on close

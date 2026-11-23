@@ -140,8 +140,9 @@ int run(const Options& options)
 {
     printVersion();
 
-    scip::FrameSourcePtr source =
-        scip::io::openSource(options.input, options.warmup + options.frames);
+    scip::io::SourceOptions sourceOptions;
+    sourceOptions.maxFrames = options.warmup + options.frames;
+    scip::FrameSourcePtr source = scip::io::openSource(options.input, sourceOptions);
     scip::Pipeline pipeline;
     for (scip::StagePtr& stage : scip::stages::createChain(options.pipeline)) {
         pipeline.add(std::move(stage));

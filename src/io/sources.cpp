@@ -1,11 +1,15 @@
 #include "scip/io.hpp"
 
 #include "../common/parse.hpp"
+#include "gst/gst_io.hpp"
+#include "uri.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace scip::io {
@@ -72,10 +76,24 @@ FrameSourcePtr makeRepeatSource(Frame frame, std::uint64_t count)
     return std::make_unique<RepeatSource>(std::move(frame), count);
 }
 
-FrameSourcePtr openSource(const std::string& uri, std::uint64_t count)
+bool isStillSource(const std::string& uri)
+{
+    if (detail::startsWith(uri, "pattern:")) {
+        return true;
+    }
+    if (detail::startsWith(uri, "gst:") || detail::startsWith(uri, "camera:")) {
+        return false;
+    }
+    return !detail::isVideoPath(uri);
+}
+
+FrameSourcePtr openSource(const std::string& uri, const SourceOptions& options)
 {
     constexpr std::string_view kPattern = "pattern:";
-    if (uri.rfind(kPattern, 0) == 0) {
+    constexpr std::string_view kGst = "gst:";
+    constexpr std::string_view kCamera = "camera:";
+
+    if (detail::startsWith(uri, kPattern)) {
         const auto parts = detail::split(std::string_view(uri).substr(kPattern.size()), ':');
         const auto [width, height] = detail::parseSize(parts[0], "pattern size");
         PixelFormat format = PixelFormat::Bgr8;
@@ -84,9 +102,31 @@ FrameSourcePtr openSource(const std::string& uri, std::uint64_t count)
         } else if (parts.size() != 1) {
             throw std::invalid_argument("usage: pattern:WIDTHxHEIGHT[:gray]");
         }
-        return makeRepeatSource(makeTestPattern(FrameInfo{width, height, format}), count);
+        return makeRepeatSource(makeTestPattern(FrameInfo{width, height, format}),
+                                options.maxFrames);
     }
-    return makeRepeatSource(readImage(uri), count);
+    if (detail::startsWith(uri, kGst)) {
+        return gst::openLaunch(uri.substr(kGst.size()), options);
+    }
+    if (detail::startsWith(uri, kCamera)) {
+        // camera:/dev/video0  or  camera:/dev/video0:1280x720
+        const auto parts = detail::split(std::string_view(uri).substr(kCamera.size()), ':');
+        int width = 0;
+        int height = 0;
+        if (parts.size() == 2) {
+            std::tie(width, height) = detail::parseSize(parts[1], "camera size");
+        } else if (parts.size() != 1 || parts[0].empty()) {
+            throw std::invalid_argument("usage: camera:/dev/videoN[:WIDTHxHEIGHT]");
+        }
+        return gst::openCamera(std::string(parts[0]), width, height, options);
+    }
+    if (!std::filesystem::exists(uri)) {
+        throw std::runtime_error("no such file: '" + uri + "'");
+    }
+    if (detail::isVideoPath(uri)) {
+        return gst::openVideoFile(uri, options);
+    }
+    return makeRepeatSource(readImage(uri), options.maxFrames);
 }
 
 }  // namespace scip::io
