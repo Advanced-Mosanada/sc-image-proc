@@ -93,6 +93,9 @@ const char* const kNewFunctions[] = {
     "bilateral",
     "guided",
     "nlmeans",
+    "temporal_mean",
+    "tnr",
+    "temporal_median",
 };
 
 }  // namespace
@@ -291,4 +294,49 @@ TEST(Denoise, NlMeansMatchesOpenCv)
     cv::fastNlMeansDenoising(scip::asMat(input), reference, 5.0f, 7, 11);
     const Frame out = run(*make("nlmeans strength=5 search=11"), input);
     EXPECT_EQ(cv::norm(scip::asMat(out), reference, cv::NORM_INF), 0.0);
+}
+
+// --- temporal noise reduction -----------------------------------------------------
+
+TEST(Temporal, MeanAveragesOverFrames)
+{
+    const FrameInfo info{16, 8, PixelFormat::Bgr8};
+    auto stage = make("temporal_mean alpha=0.5");
+    EXPECT_EQ(mean(scip::asMat(run(*stage, uniform(info, 100)))), 100.0);
+    EXPECT_NEAR(mean(scip::asMat(next(*stage, uniform(info, 200)))), 150.0, 0.5);
+    EXPECT_NEAR(mean(scip::asMat(next(*stage, uniform(info, 200)))), 175.0, 0.5);
+    // configure() starts a new history.
+    EXPECT_EQ(mean(scip::asMat(run(*stage, uniform(info, 10)))), 10.0);
+}
+
+TEST(Temporal, MedianDropsFlickerWithoutAveraging)
+{
+    const FrameInfo info{16, 8, PixelFormat::Gray8};
+    auto three = make("temporal_median frames=3");
+    EXPECT_EQ(mean(scip::asMat(run(*three, uniform(info, 10)))), 10.0);   // no history yet
+    next(*three, uniform(info, 200));                                     // a flash
+    EXPECT_EQ(mean(scip::asMat(next(*three, uniform(info, 12)))), 12.0);  // median(10, 200, 12)
+
+    auto five = make("temporal_median frames=5");
+    run(*five, uniform(info, 5));
+    for (const int v : {250, 7, 6}) {
+        next(*five, uniform(info, v));
+    }
+    EXPECT_EQ(mean(scip::asMat(next(*five, uniform(info, 251)))), 7.0);  // median of 5
+}
+
+TEST(Temporal, TnrRemovesNoiseButFollowsMotion)
+{
+    const FrameInfo info{64, 48, PixelFormat::Bgr8};
+    auto stage = make("tnr strength=0.8 noise=10");  // noise sigma 4: differences mostly < 10
+    run(*stage, noisy(info, 128, 4.0, 100));
+    cv::Mat out;
+    for (int i = 1; i < 30; ++i) {
+        out = scip::asMat(next(*stage, noisy(info, 128, 4.0, 100 + i))).clone();
+    }
+    EXPECT_LT(deviation(out), 4.0 * 0.5);  // still scene: at most half the noise
+
+    // Something moves in: a change far above the noise level is taken at once.
+    const Frame moved = uniform(info, 228);
+    EXPECT_EQ(cv::norm(scip::asMat(next(*stage, moved)), scip::asMat(moved), cv::NORM_INF), 0.0);
 }

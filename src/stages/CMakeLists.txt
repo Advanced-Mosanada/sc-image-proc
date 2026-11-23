@@ -19,6 +19,10 @@ add_library(scip_stages OBJECT
     guided.cpp
     median.cpp
     nlmeans.cpp
+    # temporal noise reduction
+    temporal_mean.cpp
+    temporal_median.cpp
+    tnr.cpp
     # other
     edges.cpp
     invert.cpp
