@@ -50,8 +50,7 @@ private:
 /// the same for tcp:// (an address of this machine to listen on).
 std::pair<std::string, int> parseListenAddress(const std::string& uri, const std::string& scheme)
 {
-    const std::string usage =
-        "usage: " + scheme + "://[ADDRESS]:PORT, e.g. " + scheme + "://:5000";
+    const std::string usage = "usage: " + scheme + "://[ADDRESS]:PORT, e.g. " + scheme + "://:5000";
     std::string rest = uri.substr(scheme.size() + 3);
     if (!rest.empty() && rest.front() == '@') {
         rest.erase(0, 1);
@@ -95,6 +94,42 @@ Frame makeTestPattern(const FrameInfo& info)
 FrameSourcePtr makeRepeatSource(Frame frame, std::uint64_t count)
 {
     return std::make_unique<RepeatSource>(std::move(frame), count);
+}
+
+std::vector<MediaEntry> listMediaFiles(const std::string& folder)
+{
+    namespace fs = std::filesystem;
+    std::error_code error;
+    if (!fs::is_directory(folder, error)) {
+        throw std::invalid_argument("no such folder: '" + folder + "'");
+    }
+    std::vector<MediaEntry> entries;
+    for (const fs::directory_entry& item :
+         fs::directory_iterator(folder, fs::directory_options::skip_permission_denied, error)) {
+        const std::string name = item.path().filename().string();
+        if (name.empty() || name.front() == '.') {
+            continue;
+        }
+        MediaEntry entry{name, fs::absolute(item.path()).lexically_normal().string(), "", 0};
+        if (item.is_directory(error)) {
+            entry.kind = "folder";
+        } else if (detail::isVideoPath(name)) {
+            entry.kind = "video";
+        } else if (detail::isImagePath(name)) {
+            entry.kind = "image";
+        } else {
+            continue;
+        }
+        if (entry.kind != "folder") {
+            entry.size = item.file_size(error);
+        }
+        entries.push_back(std::move(entry));
+    }
+    std::sort(entries.begin(), entries.end(), [](const MediaEntry& x, const MediaEntry& y) {
+        return std::make_tuple(x.kind != "folder", x.name) <
+               std::make_tuple(y.kind != "folder", y.name);
+    });
+    return entries;
 }
 
 bool isStillSource(const std::string& uri)

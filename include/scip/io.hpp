@@ -85,6 +85,18 @@ std::string gstreamerVersion();
 /// True when GStreamer can create this element (e.g. "vpuenc_h264" on the board).
 bool hasGstElement(const std::string& element);
 
+/// A folder entry an input can open (see listMediaFiles()).
+struct MediaEntry {
+    std::string name;
+    std::string path;        ///< absolute
+    std::string kind;        ///< "folder", "video" or "image"
+    std::uint64_t size = 0;  ///< bytes, 0 for folders
+};
+
+/// The sub-folders, videos and images in `folder` (hidden ones left out),
+/// folders first, then by name. Throws std::invalid_argument if it is not a folder.
+std::vector<MediaEntry> listMediaFiles(const std::string& folder);
+
 /// A size a camera delivers uncompressed, at its best frame rate.
 struct CameraMode {
     int width = 0;
