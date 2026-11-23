@@ -156,4 +156,14 @@ bool hasGStreamer()
     return gst::available();
 }
 
+std::string gstreamerVersion()
+{
+    return gst::version();
+}
+
+bool hasGstElement(const std::string& element)
+{
+    return gst::hasPlugin(element);
+}
+
 }  // namespace scip::io

@@ -21,6 +21,16 @@ bool available()
     return false;
 }
 
+std::string version()
+{
+    return {};
+}
+
+bool hasPlugin(const std::string& /*element*/)
+{
+    return false;
+}
+
 FrameSourcePtr openVideoFile(const std::string& path, const SourceOptions& /*options*/)
 {
     unavailable("video file '" + path + "'");

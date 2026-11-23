@@ -73,6 +73,12 @@ std::string viewerHint(const std::string& sinkUri);
 /// True when the build includes GStreamer (video files, camera, display, udp).
 bool hasGStreamer();
 
+/// GStreamer's runtime version, "1.18.0"; "" without GStreamer.
+std::string gstreamerVersion();
+
+/// True when GStreamer can create this element (e.g. "vpuenc_h264" on the board).
+bool hasGstElement(const std::string& element);
+
 /// A V4L2 device that can capture video (open it as "camera:" + path).
 struct VideoDevice {
     std::string path;    ///< /dev/video0

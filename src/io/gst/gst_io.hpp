@@ -12,6 +12,10 @@ namespace scip::io::gst {
 
 /// False in builds without GStreamer (no_gstreamer.cpp).
 bool available();
+/// "1.18.0", or "" without GStreamer.
+std::string version();
+/// True when GStreamer has an element factory of this name.
+bool hasPlugin(const std::string& element);
 
 FrameSourcePtr openVideoFile(const std::string& path, const SourceOptions& options);
 FrameSourcePtr

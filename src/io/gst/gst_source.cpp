@@ -430,4 +430,19 @@ bool available()
     return true;
 }
 
+std::string version()
+{
+    guint major = 0;
+    guint minor = 0;
+    guint micro = 0;
+    guint nano = 0;
+    gst_version(&major, &minor, &micro, &nano);
+    return std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(micro);
+}
+
+bool hasPlugin(const std::string& element)
+{
+    return hasElement(element.c_str());
+}
+
 }  // namespace scip::io::gst
