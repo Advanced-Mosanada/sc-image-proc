@@ -21,10 +21,13 @@
 #include <gst/app/gstappsink.h>
 #include <opencv2/imgproc.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace scip::io::gst {
@@ -115,7 +118,9 @@ StreamFormat parseCaps(GstSample* sample, const std::string& what)
     return format;
 }
 
-class GstSource final : public FrameSource {
+class GstSource final
+    : public FrameSource
+    , public Playback {
 public:
     using Setup = std::function<void(GstElement* pipeline, GstElement* appsink)>;
 
@@ -124,6 +129,7 @@ public:
         bool live = false;            ///< camera / network: newest frame only, may pause
         bool loop = false;            ///< files: start again at the end
         bool relisten = false;        ///< live servers: wait for the next sender at the end
+        bool player = false;          ///< files: controllable (Playback), start paused
     };
 
     GstSource(const std::string& description,
@@ -146,7 +152,7 @@ public:
         if (setup) {
             setup(pipeline_.get(), appsink_.get());
         }
-        setState(pipeline_.get(), GST_STATE_PLAYING, label_);
+        setState(pipeline_.get(), config_.player ? GST_STATE_PAUSED : GST_STATE_PLAYING, label_);
 
         if (config_.live) {
             // A live sender may start later; only catch immediate failures
@@ -158,7 +164,8 @@ public:
         // format is known up front. It is kept for the first read().
         const auto deadline = Clock::now() + kStallTimeout;
         while (first_ == nullptr) {
-            first_ = pullSample(kPollInterval);
+            // A player starts paused: its first frame is the preroll.
+            first_ = config_.player ? pullPreroll(kPollInterval) : pullSample(kPollInterval);
             if (first_ == nullptr && gst_app_sink_is_eos(appSink())) {
                 throw std::runtime_error(label_ + ": stream ended before the first frame");
             }
@@ -168,6 +175,8 @@ public:
             }
         }
         format_ = parseCaps(first_, label_);
+        loop_ = config_.loop;
+        skipRepeat_ = config_.player;  // PLAYING renders the preroll buffer again
     }
 
     ~GstSource() override
@@ -190,6 +199,66 @@ public:
     FrameInfo info() const override { return format_.frame; }
     double frameRate() const override { return format_.fps; }
     bool isLive() const override { return config_.live; }
+    Playback* playback() override { return config_.player ? this : nullptr; }
+
+    // --- Playback (files opened as a player) -----------------------------------
+
+    void setPaused(bool paused) override
+    {
+        if (!paused) {
+            if (ended_) {
+                seekTo(range().first);  // play again from the start (of the A-B range)
+            }
+            setState(pipeline_.get(), GST_STATE_PLAYING, label_);
+            needPreroll_ = false;  // a pending seek frame now arrives as a sample
+        } else if (!paused_) {
+            setState(pipeline_.get(), GST_STATE_PAUSED, label_);
+        }
+        paused_ = paused;
+    }
+
+    void seek(double position) override { seekTo(position); }
+
+    void setRate(double rate) override
+    {
+        if (!(rate > 0.0)) {
+            throw std::invalid_argument("rate must be > 0");
+        }
+        rate_ = rate;
+        if (!ended_) {
+            seekTo(position_);  // the rate is part of the seek
+        }
+    }
+
+    void setLoop(bool loop, std::optional<double> a, std::optional<double> b) override
+    {
+        if (a.has_value() != b.has_value()) {
+            throw std::invalid_argument("give both A and B, or neither");
+        }
+        if (a && b && *b <= *a) {
+            throw std::invalid_argument("B must be after A");
+        }
+        loop_ = loop;
+        a_ = a;
+        b_ = b;
+        if (!ended_) {
+            seekTo(position_);  // the range is part of the seek
+        }
+    }
+
+    PlaybackState state() const override
+    {
+        PlaybackState st;
+        st.paused = paused_;
+        st.ended = ended_;
+        st.position = position_;
+        st.duration = duration();
+        st.rate = rate_;
+        st.loop = loop_;
+        st.a = a_;
+        st.b = b_;
+        return st;
+    }
 
     bool read(Frame& out) override
     {
@@ -215,6 +284,9 @@ public:
 
     ReadStatus tryRead(Frame& out, std::chrono::milliseconds timeout) override
     {
+        if (config_.player) {
+            return readPlayer(out, timeout);
+        }
         if (config_.maxFrames != 0 && produced_ >= config_.maxFrames) {
             return ReadStatus::End;
         }
@@ -247,6 +319,140 @@ public:
 private:
     GstAppSink* appSink() const { return reinterpret_cast<GstAppSink*>(appsink_.get()); }
 
+    /// tryRead() of a player: frames while playing; while paused only the one a
+    /// seek lands on (the preroll; pulling a sample while paused would discard it).
+    /// At the end it loops, or pauses there, but never ends.
+    ReadStatus readPlayer(Frame& out, std::chrono::milliseconds timeout)
+    {
+        GstSample* sample = std::exchange(first_, nullptr);
+        if (sample == nullptr && needPreroll_) {
+            sample = pullPreroll(timeout);
+            if (sample == nullptr) {
+                return ReadStatus::Timeout;  // still seeking
+            }
+            needPreroll_ = false;
+            skipRepeat_ = true;
+        }
+        if (sample == nullptr) {
+            if (paused_) {
+                throwIfError(pipeline_.get(), label_);
+                std::this_thread::sleep_for(std::min(timeout, std::chrono::milliseconds(20)));
+                return ReadStatus::Timeout;
+            }
+            sample = pullSample(timeout);
+            if (sample == nullptr) {
+                if (gst_app_sink_is_eos(appSink())) {
+                    endReached();
+                }
+                return ReadStatus::Timeout;
+            }
+            const bool repeat = skipRepeat_ && bufferPts(sample) == lastPts_;
+            skipRepeat_ = false;
+            if (repeat) {
+                gst_sample_unref(sample);  // the paused frame again, as PLAYING renders it
+                return ReadStatus::Timeout;
+            }
+        }
+        lastPts_ = bufferPts(sample);
+        position_ = streamSeconds(sample);
+        out = toFrame(sample);
+        out.meta.sequence = produced_++;
+        out.meta.timestampNs =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
+                .count();
+        return ReadStatus::Frame;
+    }
+
+    /// The end of the video, or of the A-B range.
+    void endReached()
+    {
+        if (loop_ || (a_ && b_)) {
+            seekTo(range().first);
+            return;
+        }
+        setState(pipeline_.get(), GST_STATE_PAUSED, label_);
+        paused_ = true;
+        ended_ = true;
+    }
+
+    /// What plays: the A-B range when set, else the whole video.
+    std::pair<double, std::optional<double>> range() const
+    {
+        if (a_ && b_) {
+            return {*a_, b_};
+        }
+        return {0.0, std::nullopt};
+    }
+
+    void seekTo(double position)
+    {
+        const auto [start, end] = range();
+        double target = std::max(position, start);
+        const double last = end ? *end : duration();
+        if (last > 0.0) {
+            target = std::min(target, last);
+        }
+        const auto flags = static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE);
+        if (!gst_element_seek(pipeline_.get(),
+                              rate_,
+                              GST_FORMAT_TIME,
+                              flags,
+                              GST_SEEK_TYPE_SET,
+                              toNanoseconds(target),
+                              end ? GST_SEEK_TYPE_SET : GST_SEEK_TYPE_NONE,
+                              end ? toNanoseconds(*end) : GST_CLOCK_TIME_NONE)) {
+            throw std::runtime_error(label_ + ": cannot seek in this video");
+        }
+        if (ended_) {
+            ended_ = false;  // still paused: shows the frame it landed on
+        }
+        needPreroll_ = paused_;
+        position_ = target;
+    }
+
+    double duration() const
+    {
+        if (duration_ <= 0.0) {
+            gint64 nanoseconds = 0;
+            if (gst_element_query_duration(pipeline_.get(), GST_FORMAT_TIME, &nanoseconds) &&
+                nanoseconds > 0) {
+                duration_ = static_cast<double>(nanoseconds) / 1e9;
+            }
+        }
+        return duration_;
+    }
+
+    static gint64 toNanoseconds(double time) { return static_cast<gint64>(time * 1e9); }
+
+    static GstClockTime bufferPts(GstSample* sample)
+    {
+        GstBuffer* buffer = gst_sample_get_buffer(sample);
+        return buffer != nullptr ? GST_BUFFER_PTS(buffer) : GST_CLOCK_TIME_NONE;
+    }
+
+    /// The position of a frame in the video, in seconds.
+    static double streamSeconds(GstSample* sample)
+    {
+        const GstClockTime pts = bufferPts(sample);
+        const GstSegment* segment = gst_sample_get_segment(sample);
+        if (!GST_CLOCK_TIME_IS_VALID(pts)) {
+            return 0.0;
+        }
+        const guint64 time =
+            segment != nullptr ? gst_segment_to_stream_time(segment, GST_FORMAT_TIME, pts) : pts;
+        return GST_CLOCK_TIME_IS_VALID(time) ? static_cast<double>(time) / 1e9 : 0.0;
+    }
+
+    /// The preroll sample (the frame a paused pipeline shows), or nullptr after `timeout`.
+    GstSample* pullPreroll(std::chrono::milliseconds timeout)
+    {
+        GstSample* sample = gst_app_sink_try_pull_preroll(appSink(), toClockTime(timeout));
+        if (sample == nullptr) {
+            throwIfError(pipeline_.get(), label_);
+        }
+        return sample;
+    }
+
     /// One sample, or nullptr after `timeout`. Pipeline errors are thrown, so a
     /// broken stream is reported instead of looking like a quiet one.
     GstSample* pullSample(std::chrono::milliseconds timeout)
@@ -271,10 +477,10 @@ private:
     void relisten()
     {
         gst_element_set_state(pipeline_.get(), GST_STATE_NULL);
-        setState(pipeline_.get(), GST_STATE_PLAYING, label_);
+        setState(pipeline_.get(), config_.player ? GST_STATE_PAUSED : GST_STATE_PLAYING, label_);
     }
 
-        Frame toFrame(GstSample* sample)
+    Frame toFrame(GstSample* sample)
     {
         auto holder = std::make_shared<MappedSample>();
         holder->sample = sample;  // owned from here on, also if we throw below
@@ -314,6 +520,19 @@ private:
     Ptr<GstElement> appsink_;
     GstSample* first_ = nullptr;
     StreamFormat format_{};
+
+    // Player state (config_.player).
+    bool paused_ = true;
+    bool ended_ = false;
+    bool loop_ = false;
+    double rate_ = 1.0;
+    std::optional<double> a_;
+    std::optional<double> b_;
+    double position_ = 0.0;
+    mutable double duration_ = 0.0;
+    bool needPreroll_ = false;  ///< paused after a seek: deliver the frame it lands on
+    bool skipRepeat_ = false;   ///< the next sample may repeat the preroll frame
+    GstClockTime lastPts_ = GST_CLOCK_TIME_NONE;
 };
 
 /// Elements converting decoded / captured video into a format GstSource accepts,
@@ -360,6 +579,7 @@ FrameSourcePtr openVideoFile(const std::string& path, const SourceOptions& optio
     GstSource::Config config;
     config.maxFrames = options.maxFrames;
     config.loop = options.loop;
+    config.player = options.player;
     return std::make_unique<GstSource>(
         description, config, "video '" + path + "'", [&](GstElement* pipeline, GstElement*) {
             g_object_set(
@@ -428,19 +648,19 @@ FrameSourcePtr openTcp(const std::string& address, int port, const SourceOptions
     config.live = true;
     config.relisten = true;
     const std::string host = address.empty() ? std::string("0.0.0.0") : address;
-    return std::make_unique<GstSource>(
-        description,
-        config,
-        "tcp " + host + ":" + std::to_string(port),
-        [&](GstElement* pipeline, GstElement*) {
-            // The default host is "localhost": a sender on the network could not connect.
-            g_object_set(childByName(pipeline, "scip_tcp").get(),
-                         "host",
-                         host.c_str(),
-                         "port",
-                         port,
-                         nullptr);
-        });
+    return std::make_unique<GstSource>(description,
+                                       config,
+                                       "tcp " + host + ":" + std::to_string(port),
+                                       [&](GstElement* pipeline, GstElement*) {
+                                           // The default host is "localhost": a sender on the
+                                           // network could not connect.
+                                           g_object_set(childByName(pipeline, "scip_tcp").get(),
+                                                        "host",
+                                                        host.c_str(),
+                                                        "port",
+                                                        port,
+                                                        nullptr);
+                                       });
 }
 
 FrameSourcePtr openUri(const std::string& uri, const SourceOptions& options)
@@ -454,6 +674,7 @@ FrameSourcePtr openUri(const std::string& uri, const SourceOptions& options)
     config.maxFrames = options.maxFrames;
     config.live = live;
     config.loop = !live && options.loop;
+    config.player = !live && options.player;
     return std::make_unique<GstSource>(
         description, config, uri, [&](GstElement* pipeline, GstElement*) {
             g_object_set(childByName(pipeline, "scip_uri").get(), "uri", uri.c_str(), nullptr);

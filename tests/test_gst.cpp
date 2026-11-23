@@ -11,6 +11,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using scip::Frame;
 using scip::FrameInfo;
@@ -327,4 +328,87 @@ TEST(GstSource, ReceivesRawFramesOverTcpLosslessly)
     sink->close();
     EXPECT_EQ(received.info(), other);
     EXPECT_THROW(scip::io::openSource("tcp://:0", {}), std::invalid_argument);
+}
+
+namespace {
+
+/// Positions of up to `limit` frames (5 s at most), fewer once `stop` is true.
+template <typename Stop>
+std::vector<double> playFor(scip::FrameSource& source, int limit, Stop stop)
+{
+    std::vector<double> positions;
+    Frame frame;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (static_cast<int>(positions.size()) < limit && !stop() &&
+           std::chrono::steady_clock::now() < deadline) {
+        const auto status = source.tryRead(frame, std::chrono::milliseconds(50));
+        EXPECT_NE(status, scip::ReadStatus::End) << "a player never ends";
+        if (status == scip::ReadStatus::Frame) {
+            positions.push_back(source.playback()->state().position);
+        }
+    }
+    return positions;
+}
+
+}  // namespace
+
+TEST(GstSource, PlaysAFileLikeAPlayer)
+{
+    SKIP_WITHOUT_GSTREAMER();
+    const auto path = std::filesystem::temp_directory_path() / "scip_test_player.mp4";
+    const FrameInfo info{160, 128, PixelFormat::Bgr8};
+    try {
+        auto sink = scip::io::openSink(path.string(), info, 25.0);
+        const Frame frame = scip::io::makeTestPattern(info);
+        for (int i = 0; i < 50; ++i) {  // 2 s
+            sink->write(frame);
+        }
+        sink->close();
+    } catch (const std::runtime_error& e) {
+        GTEST_SKIP() << "cannot record a test file here: " << e.what();
+    }
+
+    scip::io::SourceOptions options;
+    options.player = true;  // not realtime: frames come as fast as they decode
+    auto source = scip::io::openSource(path.string(), options);
+    scip::Playback* player = source->playback();
+    ASSERT_NE(player, nullptr);
+    EXPECT_EQ(scip::io::openSource(path.string(), {})->playback(), nullptr);
+
+    // Paused on the first frame; nothing more until it plays.
+    Frame frame;
+    ASSERT_EQ(source->tryRead(frame, std::chrono::milliseconds(500)), scip::ReadStatus::Frame);
+    EXPECT_TRUE(player->state().paused);
+    EXPECT_NEAR(player->state().duration, 2.0, 0.1);
+    EXPECT_EQ(source->tryRead(frame, std::chrono::milliseconds(50)), scip::ReadStatus::Timeout);
+
+    // A seek while paused delivers the frame it lands on, once.
+    player->seek(1.0);
+    ASSERT_EQ(source->tryRead(frame, std::chrono::milliseconds(500)), scip::ReadStatus::Frame);
+    EXPECT_NEAR(player->state().position, 1.0, 0.05);
+    EXPECT_EQ(source->tryRead(frame, std::chrono::milliseconds(50)), scip::ReadStatus::Timeout);
+
+    // Playing to the end: it stops there, paused, and stays open.
+    player->setPaused(false);
+    const auto played = playFor(*source, 100, [&] { return player->state().ended; });
+    ASSERT_TRUE(player->state().ended);
+    EXPECT_TRUE(player->state().paused);
+    ASSERT_GE(played.size(), 20U);
+    EXPECT_NEAR(played.front(), 1.04, 0.05);  // no repeat of the paused frame
+    EXPECT_NEAR(played.back(), 1.96, 0.05);
+
+    // An A-B loop stays in its range; play starts again from A.
+    player->setLoop(false, 0.4, 0.8);
+    player->setPaused(false);
+    const auto looped = playFor(*source, 40, [] { return false; });
+    ASSERT_EQ(looped.size(), 40U);  // 10 frames per pass: several loops
+    for (double position : looped) {
+        EXPECT_GE(position, 0.39);
+        EXPECT_LE(position, 0.81);
+    }
+    EXPECT_FALSE(player->state().ended);
+    EXPECT_THROW(player->setLoop(false, 0.8, 0.4), std::invalid_argument);
+    EXPECT_THROW(player->setRate(0.0), std::invalid_argument);
+    source.reset();
+    std::filesystem::remove(path);
 }

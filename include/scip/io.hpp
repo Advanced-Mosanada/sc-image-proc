@@ -32,6 +32,9 @@ struct SourceOptions {
     bool realtime = false;        ///< video files: deliver at the file's frame rate
     bool gray = false;            ///< video/camera: ask GStreamer for gray8 instead of bgr8
     bool loop = false;            ///< video files: start again at the end
+    /// Video files: open as a player (FrameSource::playback()): start paused on
+    /// the first frame, and stay open at the end instead of ending.
+    bool player = false;
 };
 
 /// Open a source from a URI:
