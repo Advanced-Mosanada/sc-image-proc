@@ -12,14 +12,16 @@ include/scip/        public headers
   frame.hpp            Frame / FrameInfo / PixelFormat: the image buffer type
   stage.hpp            Stage: interface every processing step implements
   pipeline.hpp         Pipeline: runs stages in order, records per-stage latency
-  source.hpp           FrameSource: interface for inputs (files, patterns, camera)
+  source.hpp           FrameSource: interface for inputs (files, patterns, video, camera)
+  sink.hpp             FrameSink: interface for outputs (display, video file, network)
   stages.hpp           built-in stages + text factory ("gray,blur:5")
-  io.hpp               image files, test patterns, source URIs
+  io.hpp               openSource() / openSink() from URIs, image files, test patterns
   cv.hpp               zero-copy Frame <-> cv::Mat views
 src/
   core/                scip_core: depends only on the C++ standard library
   stages/              scip_stages: processing stages (CPU reference, OpenCV)
-  io/                  scip_io: sources and image writing
+  io/                  scip_io: sources and sinks
+    gst/               GStreamer: video files, camera, display, H.264 record / UDP
   common/              internal helpers (not installed)
 apps/scip-cli/         command-line runner / benchmark tool
 tests/                 GoogleTest unit tests + CLI smoke tests
@@ -35,6 +37,8 @@ next to `stages`, each behind a CMake option.
 ## Prerequisites
 
 PC (Ubuntu 24.04): `cmake` >= 3.25, `ninja`, `g++`, `libopencv-dev`, `clang-format`,
+`libgstreamer1.0-dev`, `libgstreamer-plugins-base1.0-dev`, `gstreamer1.0-libav`,
+`gstreamer1.0-plugins-ugly` (x264 encoder),
 `qemu-user-static` (optional; runs cross-built tests on the PC) and
 `gdb-multiarch` (optional; remote debugging on the board).
 
@@ -105,11 +109,59 @@ gdb-multiarch build/imx8mp-debug/apps/scip-cli \
 ## Using scip-cli
 
 ```
-scip-cli -i <image file | pattern:WxH[:gray]> -p <stages> [-o out.png] [-n frames] [-w warmup]
-scip-cli --list-stages
+scip-cli -i <input> [-p <stages>] [-o <output>]... [-n frames] [--realtime] [--gray-input]
+scip-cli --help | --list-stages | --version
 ```
 
-Stages: `gray`, `blur:K[:SIGMA]`, `resize:WxH`, chained with commas.
+Stages: `gray`, `blur:K[:SIGMA]`, `resize:WxH`, chained with commas; `none` = pass-through.
+
+| Input `-i` | |
+|---|---|
+| `pattern:WxH[:gray]` | generated test image, repeated (`-n`, default 100) |
+| `photo.png` / `.jpg` ... | still image, repeated |
+| `video.mp4` / `.mkv` / `.mov` ... | video file, until it ends (or `-n`) |
+| `camera:/dev/video0[:WxH]` | V4L2 camera, until Ctrl+C |
+| `gst:'... ! appsink name=scip_sink'` | any GStreamer pipeline |
+
+| Output `-o` (repeatable) | |
+|---|---|
+| `display` | a window on the PC; the screen via KMS on the board |
+| `display:40` | board: pick the connector (39 = LVDS panel, 40 = HDMI) |
+| `udp:HOST:PORT` | H.264/RTP stream; the CLI prints the command to watch it |
+| `out.mp4` / `out.mkv` | H.264 recording (VPU on the board, x264 on the PC) |
+| `out.png` | the last frame |
+| `gst:'appsrc name=scip_src ! ...'` | any GStreamer pipeline |
+
+`--realtime` plays a file at its own frame rate (for watching); without it frames
+are processed as fast as possible (for measuring). `--gray-input` decodes straight
+to gray, which is the cheapest path when the first stage would be `gray` anyway.
+
+### Your own video, step by step
+
+On the PC:
+
+```bash
+build/host-release/apps/scip-cli -i ~/videos/clip.mp4 -p gray,blur:5 -o display --realtime
+```
+
+On the board, shown on its screen, recorded, or streamed to the PC:
+
+```bash
+scripts/board-copy.sh ~/videos/clip.mp4          # -> /home/root/videos/ on the board
+scripts/board-run.sh scip-cli -i /home/root/videos/clip.mp4 -p gray,blur:5 -o display:40 --realtime
+scripts/board-run.sh scip-cli -i /home/root/videos/clip.mp4 -p gray,blur:5 -o /tmp/out.mp4
+scripts/board-run.sh scip-cli -i /home/root/videos/clip.mp4 -p gray,blur:5 -o udp:192.168.50.1:5000 --realtime
+```
+
+For the UDP stream, start the viewer on the PC first (scip-cli prints this command):
+
+```bash
+gst-launch-1.0 udpsrc port=5000 caps="application/x-rtp,media=video,clock-rate=90000,encoding-name=H264,payload=96" ! rtpjitterbuffer latency=100 ! rtph264depay ! avdec_h264 ! videoconvert ! autovideosink sync=false
+```
+
+The report separates where the time goes: `source (read)` (decode / waiting),
+each stage, and `outputs (write)`. On the board the VPU decoder library prints
+`ERROR: NO START CODE PREFIX` / `BYTE_STREAM` lines; they are harmless noise.
 
 ## Adding a stage
 
