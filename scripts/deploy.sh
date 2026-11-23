@@ -34,6 +34,8 @@ tar -C "$stage_dir" -cf - . | "${SCIP_SSH[@]}" "set -e
     rm -rf '$SCIP_BOARD_DIR.new'
     mkdir -p '$SCIP_BOARD_DIR.new'
     tar -C '$SCIP_BOARD_DIR.new' -m -xf -   # -m: board clock may lag the PC
+    # A running scipd keeps its binary busy (NFS cannot remove it): stop it.
+    if pkill -x scipd; then echo 'stopped the running scipd'; sleep 1; fi
     rm -rf '$SCIP_BOARD_DIR'
     mv '$SCIP_BOARD_DIR.new' '$SCIP_BOARD_DIR'"
 
