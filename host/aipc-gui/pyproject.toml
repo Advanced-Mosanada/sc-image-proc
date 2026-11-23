@@ -1,0 +1,35 @@
+[project]
+name = "aipc-gui"
+version = "0.1.0"
+description = "Host GUI for scipd targets: control them over AIPC and stream video to them"
+readme = "README.md"
+requires-python = ">=3.10"
+# PySide6-Essentials has QtCore/Gui/Widgets/Network: all we use, at a third of
+# the full PySide6 download.
+#
+# GStreamer (video in and out) comes from the system's PyGObject (python3-gi),
+# not from PyPI: building PyGObject needs a C toolchain and -dev packages, and
+# it must match the system's GStreamer anyway. That is why the venv is created
+# with --system-site-packages (see README.md).
+dependencies = ["PySide6-Essentials>=6.6"]
+
+[project.scripts]
+aipc-gui = "aipc_gui.app:main"
+aipc = "aipc_gui.protocol:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
