@@ -319,6 +319,19 @@ std::string convertForScip(const SourceOptions& options)
     return "videoconvert ! video/x-raw,format=BGR";  // fine on a PC
 }
 
+/// H.264 decoder for live streams, named explicitly rather than left to decodebin:
+/// on a PC decodebin prefers VA-API (vah264dec), which drops most frames of a
+/// live RTP stream; on the board vpudec is the VPU.
+std::string h264Decoder()
+{
+    for (const char* decoder : {"vpudec", "avdec_h264", "openh264dec"}) {
+        if (hasElement(decoder)) {
+            return decoder;
+        }
+    }
+    return "decodebin";
+}
+
 /// Only video streams are exposed: audio tracks would otherwise stay unlinked.
 constexpr const char* kVideoOnly = "caps=\"video/x-raw(ANY)\" expose-all-streams=false";
 
@@ -370,9 +383,8 @@ FrameSourcePtr openRtp(const std::string& address, int port, const SourceOptions
     const std::string description =
         "udpsrc name=scip_udp "
         "caps=\"application/x-rtp,media=video,clock-rate=90000,encoding-name=H264,payload=96\" "
-        "! rtpjitterbuffer latency=50 drop-on-latency=true ! rtph264depay ! h264parse ! "
-        "decodebin ! " +
-        convertForScip(options) + " ! appsink name=scip_sink sync=false";
+        "! rtpjitterbuffer latency=50 drop-on-latency=true ! rtph264depay ! h264parse ! " +
+        h264Decoder() + " ! " + convertForScip(options) + " ! appsink name=scip_sink sync=false";
     GstSource::Config config;
     config.maxFrames = options.maxFrames;
     config.live = true;
