@@ -30,14 +30,19 @@ struct SourceOptions {
     std::uint64_t maxFrames = 0;  ///< stop after this many frames, 0 = until the source ends
     bool realtime = false;        ///< video files: deliver at the file's frame rate
     bool gray = false;            ///< video/camera: ask GStreamer for gray8 instead of bgr8
+    bool loop = false;            ///< video files: start again at the end
 };
 
 /// Open a source from a URI:
 ///   pattern:WIDTHxHEIGHT[:gray]   generated test pattern (repeats, needs maxFrames)
 ///   <image file>                  .png/.jpg/... loaded once and repeated
 ///   <video file>                  .mp4/.mkv/.mov/.avi/.webm/.h264, decoded by GStreamer
-///   camera:/dev/videoN[:WxH]      V4L2 camera via GStreamer
+///   camera:/dev/videoN[:WxH]      V4L2 camera via GStreamer (live)
+///   rtp://[ADDRESS]:PORT          H.264 over RTP/UDP, e.g. rtp://:5000 (live)
+///   rtsp://... http(s)://... file://...   anything uridecodebin plays (rtsp: live)
 ///   gst:<launch line>             any GStreamer pipeline ending in `appsink name=scip_sink`
+/// Live sources may start before the sender: their format arrives with the
+/// first frame (see FrameSource::info()).
 FrameSourcePtr openSource(const std::string& uri, const SourceOptions& options);
 
 /// True for sources that repeat a still image (pattern:, image files): they never

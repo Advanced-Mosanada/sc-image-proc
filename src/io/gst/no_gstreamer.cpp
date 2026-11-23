@@ -31,6 +31,16 @@ FrameSourcePtr openCamera(const std::string& device, int, int, const SourceOptio
     unavailable("camera " + device);
 }
 
+FrameSourcePtr openRtp(const std::string& address, int port, const SourceOptions&)
+{
+    unavailable("rtp input " + address + ":" + std::to_string(port));
+}
+
+FrameSourcePtr openUri(const std::string& uri, const SourceOptions&)
+{
+    unavailable("input '" + uri + "'");
+}
+
 FrameSourcePtr openLaunch(const std::string&, const SourceOptions&)
 {
     unavailable("gst: source");

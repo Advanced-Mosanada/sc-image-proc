@@ -119,26 +119,52 @@ class GstSource final : public FrameSource {
 public:
     using Setup = std::function<void(GstElement* pipeline, GstElement* appsink)>;
 
+    struct Config {
+        std::uint64_t maxFrames = 0;  ///< 0 = no limit
+        bool live = false;            ///< camera / network: newest frame only, may pause
+        bool loop = false;            ///< files: start again at the end
+    };
+
     GstSource(const std::string& description,
-              std::uint64_t maxFrames,
+              Config config,
               std::string label,
               const Setup& setup = {})
-        : label_(std::move(label)), maxFrames_(maxFrames)
+        : label_(std::move(label)), config_(config)
     {
         pipeline_ = launch(description);
         appsink_ = childByName(pipeline_.get(), "scip_sink");
-        // Up to 4 decoded frames may wait for us; the decoder blocks beyond that
-        // (back-pressure) instead of dropping frames.
-        g_object_set(appsink_.get(), "max-buffers", 4u, "drop", FALSE, nullptr);
+        if (config_.live) {
+            // Keep only the newest frame: if processing is slower than the source,
+            // skip frames instead of falling further and further behind.
+            g_object_set(appsink_.get(), "max-buffers", 1u, "drop", TRUE, nullptr);
+        } else {
+            // Up to 4 decoded frames may wait for us; the decoder blocks beyond that
+            // (back-pressure) instead of dropping frames.
+            g_object_set(appsink_.get(), "max-buffers", 4u, "drop", FALSE, nullptr);
+        }
         if (setup) {
             setup(pipeline_.get(), appsink_.get());
         }
         setState(pipeline_.get(), GST_STATE_PLAYING, label_);
 
-        // The first frame tells us the size and format; keep it for the first read().
-        first_ = pullSample();
-        if (first_ == nullptr) {
-            throw std::runtime_error(label_ + ": stream ended before the first frame");
+        if (config_.live) {
+            // A live sender may start later; only catch immediate failures
+            // (missing device, port in use). The format comes with the first frame.
+            throwIfError(pipeline_.get(), label_, std::chrono::milliseconds(200));
+            return;
+        }
+        // Files: wait for the first frame, so a bad file fails right here and the
+        // format is known up front. It is kept for the first read().
+        const auto deadline = Clock::now() + kStallTimeout;
+        while (first_ == nullptr) {
+            first_ = pullSample(kPollInterval);
+            if (first_ == nullptr && gst_app_sink_is_eos(appSink())) {
+                throw std::runtime_error(label_ + ": stream ended before the first frame");
+            }
+            if (first_ == nullptr && Clock::now() > deadline) {
+                throw std::runtime_error(label_ + ": no first frame within " +
+                                         std::to_string(kStallTimeout.count()) + " s");
+            }
         }
         format_ = parseCaps(first_, label_);
     }
@@ -153,9 +179,8 @@ public:
         // pool; NXP's G2D converter waits for that inside the GPU driver, where the
         // shutdown flush cannot wake it, so a plain set_state(NULL) hangs forever.
         // Switching appsink to drop mode and emptying the queue lets it finish.
-        auto* sink = reinterpret_cast<GstAppSink*>(appsink_.get());
         g_object_set(appsink_.get(), "drop", TRUE, "max-buffers", 1u, nullptr);
-        while (GstSample* sample = gst_app_sink_try_pull_sample(sink, 0)) {
+        while (GstSample* sample = gst_app_sink_try_pull_sample(appSink(), 0)) {
             gst_sample_unref(sample);
         }
         gst_element_set_state(pipeline_.get(), GST_STATE_NULL);
@@ -163,46 +188,77 @@ public:
 
     FrameInfo info() const override { return format_.frame; }
     double frameRate() const override { return format_.fps; }
+    bool isLive() const override { return config_.live; }
 
     bool read(Frame& out) override
     {
-        if (maxFrames_ != 0 && produced_ >= maxFrames_) {
-            return false;
+        // A file that produces nothing for kStallTimeout is reported as stalled: a
+        // stuck element (e.g. a GPU/VPU driver waiting forever) must not hang the
+        // app. Live sources may legitimately pause, so they wait indefinitely.
+        const auto deadline = Clock::now() + kStallTimeout;
+        while (true) {
+            switch (tryRead(out, kPollInterval)) {
+                case ReadStatus::Frame:
+                    return true;
+                case ReadStatus::End:
+                    return false;
+                case ReadStatus::Timeout:
+                    if (!config_.live && Clock::now() > deadline) {
+                        throw std::runtime_error(label_ + ": stalled, no frame for " +
+                                                 std::to_string(kStallTimeout.count()) + " s");
+                    }
+                    break;
+            }
         }
-        GstSample* sample = first_ != nullptr ? std::exchange(first_, nullptr) : pullSample();
+    }
+
+    ReadStatus tryRead(Frame& out, std::chrono::milliseconds timeout) override
+    {
+        if (config_.maxFrames != 0 && produced_ >= config_.maxFrames) {
+            return ReadStatus::End;
+        }
+        GstSample* sample = std::exchange(first_, nullptr);
         if (sample == nullptr) {
-            return false;  // end of stream
+            sample = pullSample(timeout);
+        }
+        if (sample == nullptr) {
+            if (!gst_app_sink_is_eos(appSink())) {
+                return ReadStatus::Timeout;
+            }
+            if (!config_.loop || produced_ == 0) {
+                return ReadStatus::End;
+            }
+            restart();
+            return ReadStatus::Timeout;
         }
         out = toFrame(sample);
         out.meta.sequence = produced_++;
         out.meta.timestampNs =
             std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
                 .count();
-        return true;
+        return ReadStatus::Frame;
     }
 
 private:
-    /// Wait for the next sample, checking the bus regularly so a pipeline error
-    /// is reported instead of blocking forever. nullptr means end of stream.
-    /// A stream that produces nothing for kStallTimeout is reported as stalled: a
-    /// stuck element (e.g. a GPU/VPU driver waiting forever) must not hang the app.
-    GstSample* pullSample()
+    GstAppSink* appSink() const { return reinterpret_cast<GstAppSink*>(appsink_.get()); }
+
+    /// One sample, or nullptr after `timeout`. Pipeline errors are thrown, so a
+    /// broken stream is reported instead of looking like a quiet one.
+    GstSample* pullSample(std::chrono::milliseconds timeout)
     {
-        auto* sink = reinterpret_cast<GstAppSink*>(appsink_.get());
-        const auto deadline = Clock::now() + kStallTimeout;
-        while (true) {
-            GstSample* sample = gst_app_sink_try_pull_sample(sink, toClockTime(kPollInterval));
-            if (sample != nullptr) {
-                return sample;
-            }
+        GstSample* sample = gst_app_sink_try_pull_sample(appSink(), toClockTime(timeout));
+        if (sample == nullptr) {
             throwIfError(pipeline_.get(), label_);
-            if (gst_app_sink_is_eos(sink)) {
-                return nullptr;
-            }
-            if (Clock::now() > deadline) {
-                throw std::runtime_error(label_ + ": stalled, no frame for " +
-                                         std::to_string(kStallTimeout.count()) + " s");
-            }
+        }
+        return sample;
+    }
+
+    /// Back to the start of a file (loop). A flushing seek also clears the EOS.
+    void restart()
+    {
+        const auto flags = static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT);
+        if (!gst_element_seek_simple(pipeline_.get(), GST_FORMAT_TIME, flags, 0)) {
+            throw std::runtime_error(label_ + ": cannot loop, the stream is not seekable");
         }
     }
 
@@ -211,10 +267,11 @@ private:
         auto holder = std::make_shared<MappedSample>();
         holder->sample = sample;  // owned from here on, also if we throw below
 
+        // The format may change mid-stream (a network sender switching videos);
+        // callers see it in each frame's info().
         const StreamFormat format = parseCaps(sample, label_);
-        if (format.frame != format_.frame) {
-            throw std::runtime_error(label_ + ": stream changed size or format mid-way");
-        }
+        format_ = format;
+
         GstBuffer* buffer = gst_sample_get_buffer(sample);
         GstVideoInfo video = format.video;
         if (buffer == nullptr ||
@@ -239,7 +296,7 @@ private:
     }
 
     std::string label_;
-    std::uint64_t maxFrames_;
+    Config config_;
     std::uint64_t produced_ = 0;
     Ptr<GstElement> pipeline_;
     Ptr<GstElement> appsink_;
@@ -262,6 +319,9 @@ std::string convertForScip(const SourceOptions& options)
     return "videoconvert ! video/x-raw,format=BGR";  // fine on a PC
 }
 
+/// Only video streams are exposed: audio tracks would otherwise stay unlinked.
+constexpr const char* kVideoOnly = "caps=\"video/x-raw(ANY)\" expose-all-streams=false";
+
 }  // namespace
 
 FrameSourcePtr openVideoFile(const std::string& path, const SourceOptions& options)
@@ -269,17 +329,17 @@ FrameSourcePtr openVideoFile(const std::string& path, const SourceOptions& optio
     // decodebin picks the best decoder: vpudec (hardware) on the board,
     // libav on the PC.
     const std::string description =
-        "filesrc name=scip_file ! decodebin ! " + convertForScip(options) +
+        std::string("filesrc name=scip_file ! decodebin ") + kVideoOnly + " ! " +
+        convertForScip(options) +
         " ! appsink name=scip_sink sync=" + (options.realtime ? "true" : "false");
-    return std::make_unique<GstSource>(description,
-                                       options.maxFrames,
-                                       "video '" + path + "'",
-                                       [&](GstElement* pipeline, GstElement*) {
-                                           g_object_set(childByName(pipeline, "scip_file").get(),
-                                                        "location",
-                                                        path.c_str(),
-                                                        nullptr);
-                                       });
+    GstSource::Config config;
+    config.maxFrames = options.maxFrames;
+    config.loop = options.loop;
+    return std::make_unique<GstSource>(
+        description, config, "video '" + path + "'", [&](GstElement* pipeline, GstElement*) {
+            g_object_set(
+                childByName(pipeline, "scip_file").get(), "location", path.c_str(), nullptr);
+        });
 }
 
 FrameSourcePtr
@@ -292,21 +352,65 @@ openCamera(const std::string& device, int width, int height, const SourceOptions
     const std::string description = "v4l2src name=scip_cam ! " + cameraCaps + " ! " +
                                     convertForScip(options) +
                                     " ! appsink name=scip_sink sync=false";
+    GstSource::Config config;
+    config.maxFrames = options.maxFrames;
+    config.live = true;
     return std::make_unique<GstSource>(
-        description,
-        options.maxFrames,
-        "camera " + device,
-        [&](GstElement* pipeline, GstElement* appsink) {
+        description, config, "camera " + device, [&](GstElement* pipeline, GstElement*) {
             g_object_set(
                 childByName(pipeline, "scip_cam").get(), "device", device.c_str(), nullptr);
-            // Live input: if we are too slow, drop old frames rather than fall behind.
-            g_object_set(appsink, "max-buffers", 2u, "drop", TRUE, nullptr);
+        });
+}
+
+FrameSourcePtr openRtp(const std::string& address, int port, const SourceOptions& options)
+{
+    // H.264 over RTP/UDP, as sent by udp: outputs, the host GUI, or
+    // gst-launch-1.0 ... ! x264enc ! rtph264pay ! udpsink. The jitter buffer
+    // reorders packets and drops ones that arrive too late (50 ms).
+    const std::string description =
+        "udpsrc name=scip_udp "
+        "caps=\"application/x-rtp,media=video,clock-rate=90000,encoding-name=H264,payload=96\" "
+        "! rtpjitterbuffer latency=50 drop-on-latency=true ! rtph264depay ! h264parse ! "
+        "decodebin ! " +
+        convertForScip(options) + " ! appsink name=scip_sink sync=false";
+    GstSource::Config config;
+    config.maxFrames = options.maxFrames;
+    config.live = true;
+    const std::string where =
+        (address.empty() ? std::string("*") : address) + ":" + std::to_string(port);
+    return std::make_unique<GstSource>(
+        description, config, "rtp " + where, [&](GstElement* pipeline, GstElement*) {
+            Ptr<GstElement> udp = childByName(pipeline, "scip_udp");
+            g_object_set(udp.get(), "port", port, nullptr);
+            if (!address.empty()) {
+                g_object_set(udp.get(), "address", address.c_str(), nullptr);
+            }
+        });
+}
+
+FrameSourcePtr openUri(const std::string& uri, const SourceOptions& options)
+{
+    // uridecodebin handles the protocol (rtsp, http, file...) and the decoder.
+    const bool live = uri.rfind("rtsp://", 0) == 0;
+    const std::string description =
+        std::string("uridecodebin name=scip_uri ") + kVideoOnly + " ! " + convertForScip(options) +
+        " ! appsink name=scip_sink sync=" + (!live && options.realtime ? "true" : "false");
+    GstSource::Config config;
+    config.maxFrames = options.maxFrames;
+    config.live = live;
+    config.loop = !live && options.loop;
+    return std::make_unique<GstSource>(
+        description, config, uri, [&](GstElement* pipeline, GstElement*) {
+            g_object_set(childByName(pipeline, "scip_uri").get(), "uri", uri.c_str(), nullptr);
         });
 }
 
 FrameSourcePtr openLaunch(const std::string& description, const SourceOptions& options)
 {
-    return std::make_unique<GstSource>(description, options.maxFrames, "gst source");
+    GstSource::Config config;
+    config.maxFrames = options.maxFrames;
+    config.loop = options.loop;
+    return std::make_unique<GstSource>(description, config, "gst source");
 }
 
 bool available()

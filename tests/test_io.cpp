@@ -44,6 +44,8 @@ TEST(Sources, StillOrStream)
     EXPECT_FALSE(scip::io::isStillSource("clip.MP4"));
     EXPECT_FALSE(scip::io::isStillSource("camera:/dev/video0"));
     EXPECT_FALSE(scip::io::isStillSource("gst:videotestsrc ! appsink name=scip_sink"));
+    EXPECT_FALSE(scip::io::isStillSource("rtp://:5000"));
+    EXPECT_FALSE(scip::io::isStillSource("rtsp://camera.local/stream"));
 }
 
 TEST(Sinks, RejectsUnknownOutputs)

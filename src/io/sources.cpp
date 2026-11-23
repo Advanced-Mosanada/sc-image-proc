@@ -81,8 +81,9 @@ bool isStillSource(const std::string& uri)
     if (detail::startsWith(uri, "pattern:")) {
         return true;
     }
-    if (detail::startsWith(uri, "gst:") || detail::startsWith(uri, "camera:")) {
-        return false;
+    if (detail::startsWith(uri, "gst:") || detail::startsWith(uri, "camera:") ||
+        uri.find("://") != std::string::npos) {
+        return false;  // pipelines, cameras and network / URI streams
     }
     return !detail::isVideoPath(uri);
 }
@@ -119,6 +120,26 @@ FrameSourcePtr openSource(const std::string& uri, const SourceOptions& options)
             throw std::invalid_argument("usage: camera:/dev/videoN[:WIDTHxHEIGHT]");
         }
         return gst::openCamera(std::string(parts[0]), width, height, options);
+    }
+    constexpr std::string_view kRtp = "rtp://";
+    if (detail::startsWith(uri, kRtp)) {
+        // rtp://:5000, rtp://@:5000 (any address), rtp://239.1.2.3:5000 (multicast)
+        std::string rest = uri.substr(kRtp.size());
+        if (!rest.empty() && rest.front() == '@') {
+            rest.erase(0, 1);
+        }
+        const auto colon = rest.rfind(':');
+        if (colon == std::string::npos) {
+            throw std::invalid_argument("usage: rtp://[ADDRESS]:PORT, e.g. rtp://:5000");
+        }
+        const int port = detail::parseInt(std::string_view(rest).substr(colon + 1), "rtp port");
+        if (port <= 0 || port > 65535) {
+            throw std::invalid_argument("rtp port must be 1..65535");
+        }
+        return gst::openRtp(rest.substr(0, colon), port, options);
+    }
+    if (uri.find("://") != std::string::npos) {
+        return gst::openUri(uri, options);
     }
     if (!std::filesystem::exists(uri)) {
         throw std::runtime_error("no such file: '" + uri + "'");

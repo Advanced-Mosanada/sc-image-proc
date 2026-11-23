@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -188,4 +189,71 @@ TEST(GstSource, BgrxIsConvertedToBgr)
     for (int y = 0; y < 48; ++y) {
         ASSERT_EQ(std::memcmp(a.row(y), b.row(y), a.info().rowBytes()), 0) << "row " << y;
     }
+}
+
+TEST(GstSource, LoopsAtTheEnd)
+{
+    SKIP_WITHOUT_GSTREAMER();
+    const auto path = std::filesystem::temp_directory_path() / "scip_test_loop.mp4";
+    const FrameInfo info{160, 128, PixelFormat::Bgr8};
+    try {
+        auto sink = scip::io::openSink(path.string(), info, 25.0);
+        const Frame frame = scip::io::makeTestPattern(info);
+        for (int i = 0; i < 3; ++i) {
+            sink->write(frame);
+        }
+        sink->close();
+    } catch (const std::runtime_error& e) {
+        GTEST_SKIP() << "cannot record a test file here: " << e.what();
+    }
+
+    scip::io::SourceOptions options;
+    options.loop = true;
+    options.maxFrames = 8;  // the file has 3: needs two restarts
+    auto source = scip::io::openSource(path.string(), options);
+    EXPECT_EQ(drain(*source), 8);
+    source.reset();
+    std::filesystem::remove(path);
+}
+
+TEST(GstSource, LiveSourceWaitsForASender)
+{
+    SKIP_WITHOUT_GSTREAMER();
+    auto source = scip::io::openSource("rtp://127.0.0.1:47391", {});
+    EXPECT_TRUE(source->isLive());
+    EXPECT_EQ(source->info().width, 0);  // unknown until the first frame
+    Frame frame;
+    EXPECT_EQ(source->tryRead(frame, std::chrono::milliseconds(50)), scip::ReadStatus::Timeout);
+    EXPECT_THROW(scip::io::openSource("rtp://:99999", {}), std::invalid_argument);
+}
+
+TEST(GstSource, ReceivesRtpFromAUdpOutput)
+{
+    // The two ends the GUI and the target use: udp: output -> rtp:// input.
+    SKIP_WITHOUT_GSTREAMER();
+    auto source = scip::io::openSource("rtp://127.0.0.1:47392", {});
+    const FrameInfo info{160, 128, PixelFormat::Bgr8};
+    scip::FrameSinkPtr sink;
+    try {
+        sink = scip::io::openSink("udp:127.0.0.1:47392", info, 30.0);
+    } catch (const std::runtime_error& e) {
+        if (std::string(e.what()).find("no H.264 encoder") != std::string::npos) {
+            GTEST_SKIP() << e.what();
+        }
+        throw;
+    }
+    const Frame pattern = scip::io::makeTestPattern(info);
+    Frame received;
+    int frames = 0;
+    for (int i = 0; i < 300 && frames < 5; ++i) {  // up to ~3 s
+        sink->write(pattern);
+        if (source->tryRead(received, std::chrono::milliseconds(10)) == scip::ReadStatus::Frame) {
+            ++frames;
+        }
+    }
+    sink->close();
+    ASSERT_GE(frames, 5);
+    EXPECT_EQ(received.width(), 160);
+    EXPECT_EQ(received.height(), 128);
+    EXPECT_EQ(source->info(), received.info());
 }
