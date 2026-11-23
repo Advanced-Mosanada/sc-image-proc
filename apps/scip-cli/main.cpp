@@ -43,6 +43,7 @@ struct Options {
     std::uint64_t warmup = 5;
     bool realtime = false;
     bool grayInput = false;
+    bool loop = false;
 };
 
 void printUsage()
@@ -126,6 +127,8 @@ bool parseArgs(int argc, char** argv, Options& options)
             options.realtime = true;
         } else if (arg == "--gray-input") {
             options.grayInput = true;
+        } else if (arg == "--loop") {
+            options.loop = true;
         } else if (arg == "--list-stages") {
             std::printf("%s", scip::StageRegistry::instance().help().c_str());
             return false;
@@ -209,6 +212,43 @@ void printReport(const scip::Pipeline& pipeline, const RunStats& run, bool haveO
     }
 }
 
+/// Pipeline plus outputs, (re)built for the format of the incoming frames.
+struct Processing {
+    scip::Pipeline pipeline;
+    std::vector<scip::FrameSinkPtr> sinks;
+
+    void closeSinks()
+    {
+        for (auto& sink : sinks) {
+            sink->close();  // finishes files; errors surface here
+        }
+        sinks.clear();
+    }
+};
+
+/// Configure the pipeline for `input` and open the outputs for its result.
+/// Called on the first frame and whenever the input format changes.
+void configure(Processing& processing,
+               const Options& options,
+               const scip::FrameInfo& input,
+               double fps)
+{
+    processing.closeSinks();
+    processing.pipeline.configure(input);
+    for (const std::string& uri : options.outputs) {
+        processing.sinks.push_back(scip::io::openSink(uri, processing.pipeline.outputInfo(), fps));
+    }
+    std::printf("format  : %s", describe(input).c_str());
+    if (fps > 0.0) {
+        std::printf(" at %.2f fps", fps);
+    }
+    std::printf(" -> %s\n", describe(processing.pipeline.outputInfo()).c_str());
+    for (const auto& sink : processing.sinks) {
+        std::printf("  -> %s\n", sink->name().c_str());
+    }
+    std::fflush(stdout);
+}
+
 int run(const Options& options)
 {
     printVersion();
@@ -217,30 +257,18 @@ int run(const Options& options)
     sourceOptions.maxFrames = *options.frames == 0 ? 0 : options.warmup + *options.frames;
     sourceOptions.realtime = options.realtime;
     sourceOptions.gray = options.grayInput;
+    sourceOptions.loop = options.loop;
     scip::FrameSourcePtr source = scip::io::openSource(options.input, sourceOptions);
 
-    scip::Pipeline pipeline;
+    Processing processing;
     if (!options.pipeline.empty() && options.pipeline != "none") {
         for (scip::StagePtr& stage :
              scip::StageRegistry::instance().createChain(options.pipeline)) {
-            pipeline.add(std::move(stage));
+            processing.pipeline.add(std::move(stage));
         }
     }
-    pipeline.configure(source->info());
 
-    std::vector<scip::FrameSinkPtr> sinks;
-    for (const std::string& uri : options.outputs) {
-        sinks.push_back(scip::io::openSink(uri, pipeline.outputInfo(), source->frameRate()));
-    }
-
-    std::printf("input   : %s (%s", options.input.c_str(), describe(source->info()).c_str());
-    if (source->frameRate() > 0.0) {
-        std::printf(", %.2f fps", source->frameRate());
-    }
-    std::printf(")\noutput  : %s\n", describe(pipeline.outputInfo()).c_str());
-    for (const auto& sink : sinks) {
-        std::printf("  -> %s\n", sink->name().c_str());
-    }
+    std::printf("input   : %s%s\n", options.input.c_str(), source->isLive() ? " (live)" : "");
     for (const std::string& uri : options.outputs) {
         const std::string hint = scip::io::viewerHint(uri);
         if (!hint.empty()) {
@@ -254,6 +282,9 @@ int run(const Options& options)
                     static_cast<unsigned long long>(*options.frames),
                     static_cast<unsigned long long>(options.warmup));
     }
+    if (source->isLive()) {
+        std::printf("waiting for the first frame...\n");
+    }
     std::fflush(stdout);
 
     std::signal(SIGINT, onSignal);
@@ -264,19 +295,27 @@ int run(const Options& options)
     std::uint64_t index = 0;
     while (!g_stopRequested.load()) {
         const auto readStart = Clock::now();
-        if (!source->read(frame)) {
+        // A bounded wait keeps Ctrl+C responsive while a live source is quiet.
+        const scip::ReadStatus status = source->tryRead(frame, std::chrono::milliseconds(200));
+        if (status == scip::ReadStatus::End) {
             break;
         }
+        if (status == scip::ReadStatus::Timeout) {
+            continue;
+        }
+        if (!processing.pipeline.configured() || frame.info() != processing.pipeline.inputInfo()) {
+            configure(processing, options, frame.info(), source->frameRate());
+        }
         if (index == options.warmup) {
-            pipeline.resetStats();  // measure only once caches and clocks have settled
+            processing.pipeline.resetStats();  // measure once caches and clocks have settled
             stats.reset();
         }
         stats.read.add(Clock::now() - readStart);
 
-        const scip::Frame& result = pipeline.process(frame);
+        const scip::Frame& result = processing.pipeline.process(frame);
 
         const auto writeStart = Clock::now();
-        for (auto& sink : sinks) {
+        for (auto& sink : processing.sinks) {
             sink->write(result);
         }
         stats.write.add(Clock::now() - writeStart);
@@ -287,16 +326,18 @@ int run(const Options& options)
         std::printf("\n  stopped by signal\n");
     }
 
-    printReport(pipeline, stats, !sinks.empty());
+    if (processing.pipeline.configured()) {
+        printReport(processing.pipeline, stats, !processing.sinks.empty());
+    } else {
+        std::printf("  no frames received\n");
+    }
 
     // Shut down producer first, then consumers: stop decoding before the outputs
     // finish. (On the i.MX, closing the KMS display while the G2D converter in the
     // decode pipeline still has work queued leaves the GPU driver waiting forever.)
     frame = scip::Frame{};
     source.reset();
-    for (auto& sink : sinks) {
-        sink->close();  // finishes files; errors surface here
-    }
+    processing.closeSinks();
     for (const std::string& uri : options.outputs) {
         if (uri.rfind("display", 0) != 0 && uri.rfind("udp:", 0) != 0 &&
             uri.rfind("gst:", 0) != 0) {
