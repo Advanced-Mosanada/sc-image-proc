@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -240,4 +241,80 @@ TEST(Engine, ShowsChangesWhileTheInputIsPaused)
     EXPECT_EQ(scip::io::readImage(path.string()).format(), PixelFormat::Gray8);
     std::filesystem::remove(path);
     sender->close();
+}
+
+TEST(Engine, ControlsAVideoFileLikeAPlayer)
+{
+    if (!scip::io::hasGStreamer()) {
+        GTEST_SKIP() << "built without GStreamer";
+    }
+    const auto dir = std::filesystem::temp_directory_path();
+    const auto video = dir / "scip_engine_player.mp4";
+    const auto inputShot = dir / "scip_engine_input.png";
+    const FrameInfo info{96, 64, PixelFormat::Bgr8};
+    try {
+        auto sink = scip::io::openSink(video.string(), info, 25.0);
+        for (int i = 0; i < 50; ++i) {  // 2 s
+            sink->write(scip::io::makeTestPattern(info));
+        }
+        sink->close();
+    } catch (const std::runtime_error& e) {
+        GTEST_SKIP() << "cannot record a test file here: " << e.what();
+    }
+    std::filesystem::remove(inputShot);
+
+    Engine engine(registry());
+    engine.setPipeline(registry().parseChain("gray"));
+    engine.setInputOutputs({inputShot.string()});  // the input, before "gray"
+    scip::InputConfig input;
+    input.uri = video.string();
+    input.options.player = true;
+    input.options.realtime = true;
+    engine.setInput(input);
+    engine.start();
+
+    // Opens paused on the first frame.
+    auto status = waitFor(engine, [](const EngineStatus& s) {
+        return s.state == EngineState::Paused && s.frames == 1 && s.playback;
+    });
+    EXPECT_NEAR(status.playback->duration, 2.0, 0.1);
+    EXPECT_TRUE(engine.playback().paused);
+
+    // Seek while paused: the frame it lands on is processed.
+    engine.seek(1.2);
+    status = waitFor(engine, [](const EngineStatus& s) {
+        return s.frames == 2 && s.playback && std::abs(s.playback->position - 1.2) < 0.05;
+    });
+    EXPECT_EQ(status.state, EngineState::Paused);
+
+    // Play at double speed to the end: it stops there, still open.
+    scip::PlaybackConfig play = engine.playback();
+    play.paused = false;
+    play.rate = 2.0;
+    engine.setPlayback(play);
+    waitFor(engine, [](const EngineStatus& s) { return s.state == EngineState::Running; });
+    status = waitFor(engine, [](const EngineStatus& s) {
+        return s.state == EngineState::Paused && s.playback && s.playback->ended;
+    });
+    EXPECT_EQ(status.message, "end of the video");
+    EXPECT_TRUE(engine.playback().paused);  // in step, so "play" restarts it
+    EXPECT_GT(status.frames, 10U);
+    ASSERT_EQ(status.inputOutputs.size(), 1U);
+    EXPECT_TRUE(status.inputOutputs[0].active) << status.inputOutputs[0].error;
+
+    // Play again: from the start.
+    engine.setPlayback(play);
+    status = waitFor(engine, [](const EngineStatus& s) {
+        return s.state == EngineState::Running && s.playback && s.playback->position < 1.0;
+    });
+    EXPECT_THROW(engine.seek(-1.0), std::invalid_argument);
+    play.a = 1.0;
+    EXPECT_THROW(engine.setPlayback(play), std::invalid_argument);  // A without B
+
+    engine.setInputOutputs({});  // closes the PNG: the last input frame, in color
+    waitFor(engine, [&](const EngineStatus&) { return std::filesystem::exists(inputShot); });
+    engine.stop();
+    EXPECT_EQ(scip::io::readImage(inputShot.string()).info(), info);
+    std::filesystem::remove(video);
+    std::filesystem::remove(inputShot);
 }

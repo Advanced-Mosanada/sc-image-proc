@@ -85,6 +85,8 @@ std::string_view toString(EngineState state)
             return "waiting";
         case EngineState::Running:
             return "running";
+        case EngineState::Paused:
+            return "paused";
         case EngineState::Error:
             return "error";
     }
@@ -104,14 +106,21 @@ struct Engine::Worker {
     void applyInput(InputConfig config);
     void applyPipeline(const std::vector<StageEntry>& entries);
     void applyOutputs(const std::vector<std::string>& uris);
+    void applyInputOutputs(const std::vector<std::string>& uris);
+    void applyPlayback(const PlaybackConfig& config, std::optional<double> seekTo);
+    bool playerPaused();
 
     void step();
     void render(const Frame& frame, bool fresh);
     void configure(const FrameInfo& info);
     bool process(const Frame& frame, const Frame*& result);
     void write(const Frame& frame);
+    void writeInputOutputs(const Frame& frame);
     void openOutputs(const FrameInfo& info);
     void closeOutputs();
+    void openSinks(std::vector<ActiveOutput>& sinks, const FrameInfo& info);
+    void writeSinks(std::vector<ActiveOutput>& sinks, const Frame& frame);
+    void closeSinks(std::vector<ActiveOutput>& sinks);
     void setState(EngineState next, std::string message = {});
     void publish(bool force);
 
@@ -121,15 +130,21 @@ struct Engine::Worker {
     FrameSourcePtr source;
     std::vector<ActiveStage> stages;
     std::vector<ActiveOutput> outputs;
+    std::vector<ActiveOutput> inputOutputs;  ///< get the input, before the stages
     std::uint64_t inputVersion = kNever;
     std::uint64_t pipelineVersion = kNever;
     std::uint64_t outputsVersion = kNever;
+    std::uint64_t inputOutputsVersion = kNever;
+    std::uint64_t playbackVersion = kNever;
 
     bool configured = false;
     FrameInfo configuredFor;
     FrameInfo outputInfo;
     bool outputsPending = true;  ///< (re)open with the next processed frame
-    double pace = 0.0;           ///< frames per second for non-live sources, 0 = no limit
+    bool inputOutputsPending = true;
+    FrameInfo inputOutputsInfo;
+    bool playerEnded = false;  ///< the player input stopped at its end (reported once)
+    double pace = 0.0;         ///< frames per second for non-live sources, 0 = no limit
     Clock::time_point nextFrame;
     Clock::time_point lastFrame;
     /// The last frame read (shared with the source, not copied). When the input
@@ -155,18 +170,30 @@ void Engine::Worker::run()
         std::optional<InputConfig> newInput;
         std::optional<std::vector<StageEntry>> newPipeline;
         std::optional<std::vector<std::string>> newOutputs;
+        std::optional<std::vector<std::string>> newInputOutputs;
+        std::optional<PlaybackConfig> newPlayback;
+        std::optional<double> seekTo;
         {
             std::unique_lock lock(engine.mutex_);
             const auto pendingChange = [&] {
                 return !engine.running_ || engine.inputVersion_ != inputVersion ||
                        engine.pipelineVersion_ != pipelineVersion ||
-                       engine.outputsVersion_ != outputsVersion;
+                       engine.outputsVersion_ != outputsVersion ||
+                       engine.inputOutputsVersion_ != inputOutputsVersion ||
+                       engine.playbackVersion_ != playbackVersion;
             };
             if (!source) {
                 engine.wake_.wait_for(lock, kIdleWait, pendingChange);
             }
             if (!engine.running_) {
                 break;
+            }
+            if (engine.inputVersion_ != inputVersion ||
+                engine.playbackVersion_ != playbackVersion) {
+                // A new input gets the current player settings too.
+                playbackVersion = engine.playbackVersion_;
+                newPlayback = engine.playback_;
+                seekTo = std::exchange(engine.seekTo_, std::nullopt);
             }
             if (engine.inputVersion_ != inputVersion) {
                 inputVersion = engine.inputVersion_;
@@ -180,17 +207,27 @@ void Engine::Worker::run()
                 outputsVersion = engine.outputsVersion_;
                 newOutputs = engine.outputs_;
             }
+            if (engine.inputOutputsVersion_ != inputOutputsVersion) {
+                inputOutputsVersion = engine.inputOutputsVersion_;
+                newInputOutputs = engine.inputOutputs_;
+            }
         }
         // Outputs first: a new input must not start writing into outputs that
         // were just removed.
         if (newOutputs) {
             applyOutputs(*newOutputs);
         }
+        if (newInputOutputs) {
+            applyInputOutputs(*newInputOutputs);
+        }
         if (newPipeline) {
             applyPipeline(*newPipeline);
         }
         if (newInput) {
             applyInput(std::move(*newInput));
+        }
+        if (newPlayback) {
+            applyPlayback(*newPlayback, seekTo);
         }
         if (source) {
             step();
@@ -202,6 +239,7 @@ void Engine::Worker::run()
     lastInput = Frame();
     source.reset();
     closeOutputs();
+    closeSinks(inputOutputs);
     setState(EngineState::Idle, "stopped");
     publish(true);
 }
@@ -212,6 +250,7 @@ void Engine::Worker::applyInput(InputConfig config)
     source.reset();
     input = std::move(config);
     configured = false;
+    playerEnded = false;
     frames = 0;
     readTime.reset();
     processTime.reset();
@@ -280,6 +319,65 @@ void Engine::Worker::applyOutputs(const std::vector<std::string>& uris)
     dirty = true;
 }
 
+void Engine::Worker::applyInputOutputs(const std::vector<std::string>& uris)
+{
+    closeSinks(inputOutputs);
+    inputOutputs.clear();
+    for (const std::string& uri : uris) {
+        inputOutputs.push_back(ActiveOutput{uri, nullptr, {}});
+    }
+    inputOutputsPending = true;
+    rerender = true;
+    dirty = true;
+}
+
+void Engine::Worker::applyPlayback(const PlaybackConfig& config, std::optional<double> seekTo)
+{
+    Playback* player = source ? source->playback() : nullptr;
+    if (player == nullptr) {
+        return;
+    }
+    try {
+        const PlaybackState now = player->state();
+        if (config.rate != now.rate) {
+            player->setRate(config.rate);
+        }
+        if (config.loop != now.loop || config.a != now.a || config.b != now.b) {
+            player->setLoop(config.loop, config.a, config.b);
+        }
+        if (seekTo) {
+            player->seek(*seekTo);
+        }
+        if (config.paused != player->state().paused) {
+            player->setPaused(config.paused);
+        }
+    } catch (...) {
+        setState(state, "player: " + errorText(std::current_exception()));
+    }
+    playerEnded = player->state().ended;
+    dirty = true;
+}
+
+/// True when the input is a paused player. Keeps the engine's PlaybackConfig
+/// in step when the video stopped at its end by itself, so "play" restarts it.
+bool Engine::Worker::playerPaused()
+{
+    Playback* player = source ? source->playback() : nullptr;
+    if (player == nullptr) {
+        return false;
+    }
+    const PlaybackState st = player->state();
+    if (st.ended != playerEnded) {
+        playerEnded = st.ended;
+        if (st.ended) {
+            std::lock_guard lock(engine.mutex_);
+            engine.playback_.paused = true;
+        }
+        dirty = true;
+    }
+    return st.paused;
+}
+
 void Engine::Worker::step()
 {
     const auto now = Clock::now();
@@ -307,7 +405,9 @@ void Engine::Worker::step()
         return;
     }
     if (status == ReadStatus::Timeout) {
-        if (Clock::now() - lastFrame > kStallAfter) {
+        if (playerPaused()) {
+            setState(EngineState::Paused, playerEnded ? "end of the video" : "");
+        } else if (Clock::now() - lastFrame > kStallAfter) {
             setState(EngineState::Waiting, frames == 0 ? "" : "no frames from the input");
         }
         if (rerender && !lastInput.empty()) {
@@ -320,7 +420,9 @@ void Engine::Worker::step()
         source.reset();
         // Finish recordings; outputs reopen when a new input starts.
         closeOutputs();
+        closeSinks(inputOutputs);
         outputsPending = true;
+        inputOutputsPending = true;
         setState(EngineState::Idle, "input ended");
         return;
     }
@@ -329,6 +431,9 @@ void Engine::Worker::step()
     lastFrame = readEnd;
     lastInput = frame;
     render(frame, true);
+    if (playerPaused()) {
+        setState(EngineState::Paused);  // the frame a seek landed on
+    }
 }
 
 /// Process a frame and write the result. `fresh` = just read; a repeat of the
@@ -339,6 +444,10 @@ void Engine::Worker::render(const Frame& frame, bool fresh)
     if (!configured || frame.info() != configuredFor) {
         configure(frame.info());
     }
+
+    const auto tapStart = Clock::now();
+    writeInputOutputs(frame);
+    const auto tapTime = Clock::now() - tapStart;
 
     const auto start = Clock::now();
     const Frame* result = &frame;
@@ -352,7 +461,7 @@ void Engine::Worker::render(const Frame& frame, bool fresh)
     }
     const auto writeEnd = Clock::now();
     processTime.add(processEnd - start);
-    writeTime.add(writeEnd - processEnd);
+    writeTime.add(writeEnd - processEnd + tapTime);
     ++frames;
     recent.push_back(writeEnd);
     setState(EngineState::Running);
@@ -416,7 +525,54 @@ void Engine::Worker::write(const Frame& frame)
     if (outputsPending) {
         openOutputs(frame.info());
     }
-    for (ActiveOutput& out : outputs) {
+    writeSinks(outputs, frame);
+}
+
+void Engine::Worker::writeInputOutputs(const Frame& frame)
+{
+    if (inputOutputs.empty()) {
+        return;
+    }
+    if (inputOutputsPending || frame.info() != inputOutputsInfo) {
+        openSinks(inputOutputs, frame.info());
+        inputOutputsInfo = frame.info();
+        inputOutputsPending = false;
+    }
+    writeSinks(inputOutputs, frame);
+}
+
+void Engine::Worker::openOutputs(const FrameInfo& info)
+{
+    openSinks(outputs, info);
+    outputsPending = false;
+}
+
+void Engine::Worker::closeOutputs()
+{
+    closeSinks(outputs);
+}
+
+void Engine::Worker::openSinks(std::vector<ActiveOutput>& sinks, const FrameInfo& info)
+{
+    closeSinks(sinks);
+    double fps = pace > 0.0 ? pace : 0.0;
+    if (source && source->frameRate() > 0.0) {
+        fps = source->frameRate();
+    }
+    for (ActiveOutput& out : sinks) {
+        try {
+            out.sink = io::openSink(out.uri, info, fps);
+            out.error.clear();
+        } catch (...) {
+            out.error = errorText(std::current_exception());
+        }
+    }
+    dirty = true;
+}
+
+void Engine::Worker::writeSinks(std::vector<ActiveOutput>& sinks, const Frame& frame)
+{
+    for (ActiveOutput& out : sinks) {
         if (!out.sink) {
             continue;
         }
@@ -431,28 +587,9 @@ void Engine::Worker::write(const Frame& frame)
     }
 }
 
-void Engine::Worker::openOutputs(const FrameInfo& info)
+void Engine::Worker::closeSinks(std::vector<ActiveOutput>& sinks)
 {
-    closeOutputs();
-    double fps = pace > 0.0 ? pace : 0.0;
-    if (source && source->frameRate() > 0.0) {
-        fps = source->frameRate();
-    }
-    for (ActiveOutput& out : outputs) {
-        try {
-            out.sink = io::openSink(out.uri, info, fps);
-            out.error.clear();
-        } catch (...) {
-            out.error = errorText(std::current_exception());
-        }
-    }
-    outputsPending = false;
-    dirty = true;
-}
-
-void Engine::Worker::closeOutputs()
-{
-    for (ActiveOutput& out : outputs) {
+    for (ActiveOutput& out : sinks) {
         if (!out.sink) {
             continue;
         }
@@ -518,6 +655,13 @@ void Engine::Worker::publish(bool force)
         s.outputs.push_back(OutputStatus{
             out.uri, out.sink ? out.sink->name() : "", out.sink != nullptr, out.error});
     }
+    for (const ActiveOutput& out : inputOutputs) {
+        s.inputOutputs.push_back(OutputStatus{
+            out.uri, out.sink ? out.sink->name() : "", out.sink != nullptr, out.error});
+    }
+    if (Playback* player = source ? source->playback() : nullptr) {
+        s.playback = player->state();
+    }
 
     std::lock_guard lock(engine.mutex_);
     engine.status_ = std::move(s);
@@ -568,6 +712,14 @@ void Engine::setInput(InputConfig config)
         throw std::invalid_argument("max_fps must be >= 0");
     }
     std::lock_guard lock(mutex_);
+    if (config.options.player) {
+        // A new video starts paused on its first frame, without an A-B range.
+        playback_.paused = true;
+        playback_.loop = config.options.loop;
+        playback_.a.reset();
+        playback_.b.reset();
+        seekTo_.reset();
+    }
     input_ = std::move(config);
     ++inputVersion_;
     changed();
@@ -665,7 +817,9 @@ void Engine::clearPipeline()
     changed();
 }
 
-void Engine::setOutputs(std::vector<std::string> uris)
+namespace {
+
+void validateOutputs(const std::vector<std::string>& uris)
 {
     for (std::size_t i = 0; i < uris.size(); ++i) {
         io::validateSinkUri(uris[i]);
@@ -674,6 +828,13 @@ void Engine::setOutputs(std::vector<std::string> uris)
             throw std::invalid_argument("output listed twice: '" + uris[i] + "'");
         }
     }
+}
+
+}  // namespace
+
+void Engine::setOutputs(std::vector<std::string> uris)
+{
+    validateOutputs(uris);
     std::lock_guard lock(mutex_);
     outputs_ = std::move(uris);
     ++outputsVersion_;
@@ -684,6 +845,55 @@ std::vector<std::string> Engine::outputs() const
 {
     std::lock_guard lock(mutex_);
     return outputs_;
+}
+
+void Engine::setInputOutputs(std::vector<std::string> uris)
+{
+    validateOutputs(uris);
+    std::lock_guard lock(mutex_);
+    inputOutputs_ = std::move(uris);
+    ++inputOutputsVersion_;
+    changed();
+}
+
+std::vector<std::string> Engine::inputOutputs() const
+{
+    std::lock_guard lock(mutex_);
+    return inputOutputs_;
+}
+
+void Engine::setPlayback(const PlaybackConfig& config)
+{
+    if (!(config.rate > 0.0)) {
+        throw std::invalid_argument("rate must be > 0");
+    }
+    if (config.a.has_value() != config.b.has_value()) {
+        throw std::invalid_argument("give both a and b, or neither");
+    }
+    if (config.a && (*config.a < 0.0 || *config.b <= *config.a)) {
+        throw std::invalid_argument("the loop needs 0 <= a < b");
+    }
+    std::lock_guard lock(mutex_);
+    playback_ = config;
+    ++playbackVersion_;
+    changed();
+}
+
+PlaybackConfig Engine::playback() const
+{
+    std::lock_guard lock(mutex_);
+    return playback_;
+}
+
+void Engine::seek(double seconds)
+{
+    if (!(seconds >= 0.0)) {
+        throw std::invalid_argument("position must be >= 0");
+    }
+    std::lock_guard lock(mutex_);
+    seekTo_ = seconds;
+    ++playbackVersion_;
+    changed();
 }
 
 EngineStatus Engine::status() const
@@ -720,6 +930,18 @@ EngineStatus Engine::status() const
         outputs.push_back(std::move(out));
     }
     result.outputs = std::move(outputs);
+    std::vector<OutputStatus> inputOutputs;
+    for (const std::string& uri : inputOutputs_) {
+        OutputStatus out;
+        out.uri = uri;
+        for (const OutputStatus& seen : status_.inputOutputs) {
+            if (seen.uri == uri) {
+                out = seen;
+            }
+        }
+        inputOutputs.push_back(std::move(out));
+    }
+    result.inputOutputs = std::move(inputOutputs);
     if (!running_) {
         result.state = EngineState::Idle;
         result.message = "stopped";

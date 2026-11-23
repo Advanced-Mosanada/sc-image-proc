@@ -32,6 +32,15 @@ struct InputConfig {
     double maxFps = 0.0;        ///< throttle non-live inputs (e.g. patterns); 0 = no limit
 };
 
+/// Player controls for an input opened with options.player (a video file).
+struct PlaybackConfig {
+    bool paused = true;
+    double rate = 1.0;        ///< > 0
+    bool loop = false;        ///< the whole video
+    std::optional<double> a;  ///< A-B loop range, seconds: both or neither
+    std::optional<double> b;
+};
+
 /// One function in the engine's pipeline.
 struct StageEntry {
     int id = 0;  ///< stable identifier, unaffected by reordering
@@ -43,6 +52,7 @@ enum class EngineState {
     Idle,     ///< no input configured, or the input ended
     Waiting,  ///< input open, no frame yet (a live sender has not started)
     Running,  ///< frames are flowing
+    Paused,   ///< a player input is paused (or stopped at its end)
     Error,    ///< the input could not be opened or failed
 };
 
@@ -81,6 +91,8 @@ struct EngineStatus {
     double writeMs = 0.0;  ///< mean time for all outputs
     std::vector<StageStatus> stages;
     std::vector<OutputStatus> outputs;
+    std::vector<OutputStatus> inputOutputs;  ///< outputs of the input, before the functions
+    std::optional<PlaybackState> playback;   ///< for a player input
 };
 
 class Engine {
@@ -119,6 +131,19 @@ public:
     void setOutputs(std::vector<std::string> uris);
     std::vector<std::string> outputs() const;
 
+    /// Outputs that get the input frames as they are, before the functions,
+    /// e.g. to watch the target's camera or file next to the result.
+    void setInputOutputs(std::vector<std::string> uris);
+    std::vector<std::string> inputOutputs() const;
+
+    // --- player ----------------------------------------------------------------
+    /// For an input opened with options.player; applied by the worker, the
+    /// result shows in status().playback. setInput() with a player starts paused.
+    void setPlayback(const PlaybackConfig& config);
+    PlaybackConfig playback() const;
+    /// Jump to `seconds` in the player input.
+    void seek(double seconds);
+
     /// A snapshot, safe to call from any thread.
     EngineStatus status() const;
 
@@ -135,10 +160,15 @@ private:
     InputConfig input_;
     std::vector<StageEntry> stages_;
     std::vector<std::string> outputs_;
+    std::vector<std::string> inputOutputs_;
+    PlaybackConfig playback_;
+    std::optional<double> seekTo_;
     int nextStageId_ = 1;
     std::uint64_t inputVersion_ = 0;
     std::uint64_t pipelineVersion_ = 0;
     std::uint64_t outputsVersion_ = 0;
+    std::uint64_t inputOutputsVersion_ = 0;
+    std::uint64_t playbackVersion_ = 0;
     EngineStatus status_;
 
     bool running_ = false;
