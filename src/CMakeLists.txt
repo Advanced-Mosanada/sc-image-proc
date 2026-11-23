@@ -4,6 +4,7 @@
 #   scip_cvinterop  Frame <-> cv::Mat views              (header-only, OpenCV core)
 #   scip_stages     processing stages                   (core + OpenCV imgproc)
 #   scip_gst        GStreamer helpers (internal)         (GStreamer; only if enabled)
+#   scip_gststages  GStreamer filters as functions      (scip_gst; empty without it)
 #   scip_io         sources and sinks                   (core + OpenCV + scip_gst)
 #
 # Hardware backends (NEON, OpenCL, G2D, NPU) will be added as further libraries
@@ -16,7 +17,5 @@ add_library(scip::cvinterop ALIAS scip_cvinterop)
 target_link_libraries(scip_cvinterop INTERFACE scip_core opencv_core)
 
 add_subdirectory(stages)
-if(SCIP_WITH_GSTREAMER)
-    add_subdirectory(gst)
-endif()
+add_subdirectory(gst)
 add_subdirectory(io)

@@ -12,6 +12,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(scip_tests
     test_frame.cpp
     test_gst.cpp
+    test_gst_stages.cpp
     test_io.cpp
     test_params.cpp
     test_pipeline.cpp
@@ -19,7 +20,7 @@ add_executable(scip_tests
     test_stages.cpp
     test_stats.cpp)
 target_link_libraries(scip_tests PRIVATE
-    scip_stages scip_io scip_cvinterop opencv_imgproc GTest::gtest_main)
+    scip_stages scip_gststages scip_io scip_cvinterop opencv_imgproc GTest::gtest_main)
 scip_set_warnings(scip_tests)
 
 # PRE_TEST: list the tests when ctest runs, not at build time, so cross builds

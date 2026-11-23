@@ -6,6 +6,7 @@
 //   scip-cli -i video.mp4 -p gray -o out.mp4 -o udp:192.168.50.1:5000
 
 #include "scip/build_info.hpp"
+#include "scip/gst_stages.hpp"
 #include "scip/io.hpp"
 #include "scip/pipeline.hpp"
 #include "scip/registry.hpp"
@@ -310,6 +311,7 @@ int run(const Options& options)
 int main(int argc, char** argv)
 {
     try {
+        scip::gst::registerStages(scip::StageRegistry::instance());
         Options options;
         if (!parseArgs(argc, argv, options)) {
             return 0;
