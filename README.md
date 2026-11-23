@@ -237,7 +237,10 @@ controls. See [src/stages/README.md](src/stages/README.md):
    (OpenCV or the plain C++ version) with an explicit tolerance.
 4. Benchmark on the board with `scip-cli` or watch it live with the GUI.
 
-GStreamer filter elements installed on a machine (`videoflip`, `gamma`, ...)
+The built-in functions (contrast, spatial and temporal noise reduction,
+sharpening, ...) and their cost on the board are listed in
+[src/stages/README.md](src/stages/README.md). GStreamer filter elements
+installed on a machine (`videoflip`, `gamma`, ...)
 are offered as functions too, their parameters read from the element's
 properties; `gst pipeline="..."` runs any chain of elements.
 
