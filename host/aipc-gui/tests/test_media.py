@@ -8,36 +8,9 @@ import pytest
 
 from aipc_gui import media
 
-from .conftest import free_udp_port
+from .conftest import free_udp_port, run_for
 
 pytestmark = pytest.mark.skipif(not media.available(), reason="no GStreamer for Python")
-
-
-@pytest.fixture(scope="module")
-def clip(tmp_path_factory):
-    """3 s, 320x240 at 30 fps, H.264 in MP4."""
-    if not media.has_element("x264enc"):
-        pytest.skip("x264enc not installed")
-    path = tmp_path_factory.mktemp("media") / "clip.mp4"
-    pipeline = media.Gst.parse_launch(
-        "videotestsrc num-buffers=90 pattern=ball ! video/x-raw,width=320,height=240,framerate=30/1"
-        f" ! x264enc ! mp4mux ! filesink location={path}"
-    )
-    pipeline.set_state(media.Gst.State.PLAYING)
-    pipeline.get_bus().timed_pop_filtered(
-        10 * media.SECOND, media.Gst.MessageType.EOS | media.Gst.MessageType.ERROR
-    )
-    pipeline.set_state(media.Gst.State.NULL)
-    return path
-
-
-def run_for(seconds: float, *things) -> None:
-    """Let GStreamer run, handling bus messages like the GUI's timer does."""
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        for thing in things:
-            thing.poll()
-        time.sleep(0.02)
 
 
 def test_opens_a_file_paused(clip):

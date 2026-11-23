@@ -1,0 +1,75 @@
+"""The main window against a real scipd, end to end on localhost."""
+
+from __future__ import annotations
+
+import pytest
+
+from aipc_gui import media
+from aipc_gui.main_window import MainWindow, parse_target
+from aipc_gui.protocol import AipcClient
+from aipc_gui.widgets.io import FROM_PC, PATTERN
+
+from .conftest import free_udp_port
+
+
+@pytest.fixture
+def window(qtbot, scipd):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.connect_to(scipd.host, scipd.port)
+    qtbot.waitUntil(lambda: bool(window.pipeline.functions and window.target_info), timeout=5000)
+    yield window
+    window.close()
+
+
+def test_parse_target():
+    assert parse_target("10.0.0.2") == ("10.0.0.2", 5600)
+    assert parse_target("10.0.0.2:5700 (board)") == ("10.0.0.2", 5700)
+
+
+def test_builds_and_edits_the_pipeline(qtbot, window, scipd):
+    assert "pytest-target" in window.target_label.text()
+    window.pipeline.add_function("gray")
+    window.pipeline.add_function("blur")
+    qtbot.waitUntil(lambda: window.pipeline.list.count() == 2, timeout=3000)
+
+    # The new stage is selected and its parameters shown.
+    assert window.pipeline.editor.fields.keys() == {"ksize", "sigma"}
+    window.pipeline.editor.fields["ksize"].spin.setValue(7)
+    with AipcClient(scipd.host, scipd.port) as other:
+        qtbot.waitUntil(lambda: "ksize=7" in other.call("pipeline.get")["text"], timeout=3000)
+        # A change by another client shows up here (event.config).
+        other.call("pipeline.clear")
+    qtbot.waitUntil(lambda: window.pipeline.list.count() == 0, timeout=3000)
+
+
+def test_runs_a_pattern_and_shows_stats(qtbot, window):
+    window.inputs.kind.setCurrentIndex(PATTERN)
+    window.inputs.pattern_size.setCurrentText("64x48")
+    window.inputs.apply()
+    qtbot.waitUntil(lambda: window.last_stats.get("state") == "running", timeout=5000)
+    assert "64x48" in window.stats.labels["input"].text()
+
+
+@pytest.mark.skipif(not media.available(), reason="no GStreamer for Python")
+def test_streams_a_file_to_the_target_and_shows_the_result(qtbot, window, clip):
+    to_target, back = free_udp_port(), free_udp_port()
+    window.pipeline.text.setText("gray ! invert")
+    window.pipeline.text.returnPressed.emit()
+
+    window.inputs.kind.setCurrentIndex(FROM_PC)
+    window.inputs.pc_port.setValue(to_target)
+    window.inputs.apply()
+    window.outputs.to_pc_port.setValue(back)
+    window.outputs.to_pc.setChecked(True)
+    window.outputs.apply()
+
+    assert window.player.open(str(clip))
+    window.player.loop.setChecked(True)
+    window.player.toggle()  # play
+    qtbot.waitUntil(lambda: window.result_view.image is not None, timeout=8000)
+    assert window.sent_view.image is not None
+    # Statistics arrive every 500 ms, so they may lag the first frames.
+    qtbot.waitUntil(lambda: window.last_stats.get("state") == "running", timeout=3000)
+    assert window.last_stats["output_info"]["format"] == "gray8"
+    assert window.receiver.port == back
