@@ -79,12 +79,23 @@ std::string gstreamerVersion();
 /// True when GStreamer can create this element (e.g. "vpuenc_h264" on the board).
 bool hasGstElement(const std::string& element);
 
+/// A size a camera delivers uncompressed, at its best frame rate.
+struct CameraMode {
+    int width = 0;
+    int height = 0;
+    double fps = 0.0;    ///< highest rate at this size, 0 if the driver does not say
+    std::string format;  ///< V4L2 fourcc, "YUYV"
+};
+
 /// A V4L2 device that can capture video (open it as "camera:" + path).
 struct VideoDevice {
     std::string path;    ///< /dev/video0
     std::string name;    ///< "HD Pro Webcam C920"
     std::string driver;  ///< "uvcvideo"
     std::string bus;     ///< "usb-xhci-hcd.1.auto-1"
+    /// Largest first. Open one as "camera:" + path + ":" + WxH. Without a size
+    /// the camera's largest mode is used, which may be slow (C920: 2 fps).
+    std::vector<CameraMode> modes;
 };
 
 /// Cameras on this machine. Codec and metadata nodes are left out.

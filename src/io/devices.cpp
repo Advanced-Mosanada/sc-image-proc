@@ -68,6 +68,78 @@ std::string text(const __u8* bytes, std::size_t size)
     return std::string(chars, strnlen(chars, size));
 }
 
+std::string fourcc(__u32 code)
+{
+    std::string text;
+    for (int i = 0; i < 4; ++i) {
+        text += static_cast<char>((code >> (8 * i)) & 0xff);
+    }
+    return text;
+}
+
+/// Highest frame rate of a size, from the driver's discrete intervals.
+double bestFps(int fd, __u32 pixelFormat, __u32 width, __u32 height)
+{
+    double best = 0.0;
+    v4l2_frmivalenum interval{};
+    interval.pixel_format = pixelFormat;
+    interval.width = width;
+    interval.height = height;
+    for (interval.index = 0; ::ioctl(fd, VIDIOC_ENUM_FRAMEINTERVALS, &interval) == 0;
+         ++interval.index) {
+        const v4l2_fract period = interval.type == V4L2_FRMIVAL_TYPE_DISCRETE
+                                      ? interval.discrete
+                                      : interval.stepwise.min;  // shortest period
+        if (period.numerator > 0) {
+            best = std::max(best, static_cast<double>(period.denominator) / period.numerator);
+        }
+        if (interval.type != V4L2_FRMIVAL_TYPE_DISCRETE) {
+            break;
+        }
+    }
+    return best;
+}
+
+/// Uncompressed sizes (what the camera: input asks for), largest first. A size
+/// offered in several formats is listed once, with its best frame rate.
+std::vector<CameraMode> cameraModes(int fd)
+{
+    std::vector<CameraMode> modes;
+    v4l2_fmtdesc format{};
+    format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    for (format.index = 0; ::ioctl(fd, VIDIOC_ENUM_FMT, &format) == 0; ++format.index) {
+        if ((format.flags & V4L2_FMT_FLAG_COMPRESSED) != 0) {
+            continue;  // MJPEG / H.264 cameras modes need a decoder in the input
+        }
+        v4l2_frmsizeenum size{};
+        size.pixel_format = format.pixelformat;
+        for (size.index = 0; ::ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &size) == 0; ++size.index) {
+            if (size.type != V4L2_FRMSIZE_TYPE_DISCRETE) {
+                break;  // continuous ranges (some CSI sensors): any size is fine
+            }
+            CameraMode mode;
+            mode.width = static_cast<int>(size.discrete.width);
+            mode.height = static_cast<int>(size.discrete.height);
+            mode.fps = bestFps(fd, format.pixelformat, size.discrete.width, size.discrete.height);
+            mode.format = fourcc(format.pixelformat);
+            auto same = std::find_if(modes.begin(), modes.end(), [&](const CameraMode& m) {
+                return m.width == mode.width && m.height == mode.height;
+            });
+            if (same == modes.end()) {
+                modes.push_back(mode);
+            } else if (mode.fps > same->fps) {
+                *same = mode;
+            }
+        }
+    }
+    std::sort(modes.begin(), modes.end(), [](const CameraMode& a, const CameraMode& b) {
+        const long areaA = static_cast<long>(a.width) * a.height;
+        const long areaB = static_cast<long>(b.width) * b.height;
+        return areaA != areaB ? areaA > areaB : a.fps > b.fps;
+    });
+    return modes;
+}
+
 #ifdef SCIP_HAVE_DRM
 std::string connectorTypeName(std::uint32_t type)
 {
@@ -155,6 +227,7 @@ std::vector<VideoDevice> listVideoDevices()
         device.name = text(capability.card, sizeof(capability.card));
         device.driver = text(capability.driver, sizeof(capability.driver));
         device.bus = text(capability.bus_info, sizeof(capability.bus_info));
+        device.modes = cameraModes(fd.get());
         devices.push_back(device);
     }
     return devices;

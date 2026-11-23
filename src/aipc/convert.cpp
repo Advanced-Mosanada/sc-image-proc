@@ -183,12 +183,24 @@ Json toJson(const EngineStatus& status)
 
 Json toJson(const io::VideoDevice& device)
 {
+    Json modes = Json::array();
+    for (const io::CameraMode& mode : device.modes) {
+        const std::string size = std::to_string(mode.width) + "x" + std::to_string(mode.height);
+        modes.push_back({
+            {"width", mode.width},
+            {"height", mode.height},
+            {"fps", rounded(mode.fps, 0.01)},
+            {"format", mode.format},
+            {"uri", "camera:" + device.path + ":" + size},
+        });
+    }
     return {
         {"path", device.path},
         {"name", device.name},
         {"driver", device.driver},
         {"bus", device.bus},
         {"uri", "camera:" + device.path},
+        {"modes", modes},
     };
 }
 

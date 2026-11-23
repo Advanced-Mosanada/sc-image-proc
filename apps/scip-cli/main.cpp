@@ -102,6 +102,14 @@ void printDevices()
                     device.name.c_str(),
                     device.driver.c_str(),
                     device.bus.c_str());
+        std::string modes;
+        for (const auto& mode : device.modes) {
+            modes += " " + std::to_string(mode.width) + "x" + std::to_string(mode.height) + "@" +
+                     std::to_string(static_cast<int>(mode.fps + 0.5));
+        }
+        if (!modes.empty()) {
+            std::printf("  %-14s modes (camera:PATH:WxH):%s\n", "", modes.c_str());
+        }
     }
     std::printf("displays (output display:ID)%s:\n",
                 scip::io::hasWindowSystem()

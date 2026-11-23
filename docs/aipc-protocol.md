@@ -335,8 +335,16 @@ again restarts it.
 
 ```json
 {"cameras": [{"path": "/dev/video0", "name": "HD Pro Webcam C920", "driver": "uvcvideo",
-              "bus": "usb-xhci-hcd.1.auto-1", "uri": "camera:/dev/video0"}]}
+              "bus": "usb-xhci-hcd.1.auto-1", "uri": "camera:/dev/video0",
+              "modes": [{"width": 2304, "height": 1536, "fps": 2.0, "format": "YUYV",
+                         "uri": "camera:/dev/video0:2304x1536"},
+                        {"width": 640, "height": 480, "fps": 30.0, "format": "YUYV",
+                         "uri": "camera:/dev/video0:640x480"}]}]}
 ```
+
+`modes` lists the uncompressed sizes, largest first, each with its best
+frame rate. Without a size the camera's largest mode is used, which can be
+slow: offer the user the modes.
 
 ### 5.5 output
 
