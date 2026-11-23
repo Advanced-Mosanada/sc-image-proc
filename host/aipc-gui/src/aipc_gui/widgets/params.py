@@ -140,6 +140,7 @@ class NumberField(Field):
             self.spin.setSingleStep(self.step or default_step)
         if spec.get("unit"):
             self.spin.setSuffix(f" {spec['unit']}")
+        self.spin.setMinimumWidth(110)  # room for the value and its unit
         self.spin.setKeyboardTracking(False)  # typing "15" is one edit, not "1" then "15"
         self.spin.valueChanged.connect(self._spun)
         self.layout().addWidget(self.spin)

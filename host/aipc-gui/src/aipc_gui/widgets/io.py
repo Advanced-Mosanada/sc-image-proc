@@ -35,6 +35,12 @@ KIND_LABELS = [
 ]
 
 
+def port_box(value: int) -> QSpinBox:
+    box = QSpinBox(minimum=1, maximum=65535, value=value)
+    box.setMinimumWidth(90)
+    return box
+
+
 def describe_uri(uri: str) -> str:
     return uri or "(none)"
 
@@ -61,7 +67,7 @@ class InputPanel(QWidget):
         # From this PC: the player sends to rtp://:PORT on the target.
         page = QWidget()
         form = QFormLayout(page)
-        self.pc_port = QSpinBox(minimum=1, maximum=65535, value=VIDEO_TO_TARGET_PORT)
+        self.pc_port = port_box(VIDEO_TO_TARGET_PORT)
         form.addRow("RTP port on the target", self.pc_port)
         form.addRow(QLabel("Open a file in the player and press play."))
         self.pages.addWidget(page)
@@ -95,7 +101,7 @@ class InputPanel(QWidget):
         # RTP from another sender (a camera, ffmpeg, another target).
         page = QWidget()
         form = QFormLayout(page)
-        self.network_port = QSpinBox(minimum=1, maximum=65535, value=VIDEO_TO_TARGET_PORT)
+        self.network_port = port_box(VIDEO_TO_TARGET_PORT)
         form.addRow("RTP port on the target", self.network_port)
         self.pages.addWidget(page)
 
@@ -247,7 +253,7 @@ class OutputPanel(QWidget):
         form = QFormLayout(box)
         self.to_pc = QCheckBox("Send the result to this PC")
         self.to_pc.setChecked(True)
-        self.to_pc_port = QSpinBox(minimum=1, maximum=65535, value=VIDEO_FROM_TARGET_PORT)
+        self.to_pc_port = port_box(VIDEO_FROM_TARGET_PORT)
         row = QHBoxLayout()
         row.addWidget(self.to_pc)
         row.addWidget(QLabel("port"))

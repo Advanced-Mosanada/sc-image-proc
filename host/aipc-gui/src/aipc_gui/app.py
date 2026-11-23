@@ -6,6 +6,7 @@ import argparse
 import signal
 import sys
 
+from PySide6.QtCore import QLocale
 from PySide6.QtWidgets import QApplication
 
 from . import __version__
@@ -19,6 +20,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"aipc-gui {__version__}")
     args, qt_args = parser.parse_known_args(argv)
 
+    # Numbers the C way (0-9, "." for decimals) whatever the desktop's locale:
+    # parameter values must read like the pipeline text ("sigma=1.5") and the
+    # protocol, not like ٫١٥ in an Arabic locale.
+    QLocale.setDefault(QLocale.c())
     app = QApplication([sys.argv[0], *qt_args])
     app.setApplicationName("aipc-gui")
     signal.signal(signal.SIGINT, signal.SIG_DFL)  # Ctrl+C in the terminal quits
