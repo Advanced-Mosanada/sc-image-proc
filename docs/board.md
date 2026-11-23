@@ -67,4 +67,29 @@ Result for `gray ! blur ksize=5` on that video: 45 fps -> 274 fps (BGR input),
   its buffer pool is exhausted and the pipeline is stopped. The source drains its
   appsink before stopping, and reports a stall after 10 s without frames.
 - **vpuenc_h264** accepts 64x64 .. 1920x1088, takes BGRx directly, and rejects
-  fractional frame rates (60001/1000) - outputs round to whole fps.
+  fractional frame rates (60001/1000) - outputs round to whole fps. Larger frames
+  (the C920 at 2304x1536) are scaled down to fit on their way into `udp:` and
+  `.mp4` outputs.
+- **C920 without a size** opens at 2304x1536, which delivers 2 fps. Its fastest
+  large uncompressed mode is 800x448 at 30 fps; `scip-cli --list-devices` and
+  AIPC `input.devices` list all modes.
+- A running **scipd** keeps its binary busy on the NFS root; `deploy.sh` stops it
+  (and waits for it to exit) before replacing `/opt/scip`.
+
+## scipd on the board (measured 2026-11-23, imx8mp-release)
+
+H.264 1280x720 at 30 fps streamed from the PC GUI to `rtp://:5000`, pipeline
+`gray ! edges`:
+
+| Outputs | fps | outputs time per frame |
+|---|---|---|
+| none | 31 | 0.2 ms |
+| `udp:192.168.50.1:5002` (VPU encoder) | 30 | 1.7 ms |
+| `display:40` (HDMI 1920x1080) | 25 | 21 ms |
+| both | 24 | 22 ms |
+
+The display output is the bottleneck: the frame is converted and letterboxed
+to the screen size on the CPU (see the kmssink quirk above). Moving that to
+G2D, or writing outputs on their own thread, is the next performance step.
+
+Camera C920 at 800x448, `gray ! blur ksize=5 ! edges`, to HDMI and UDP: 30 fps.

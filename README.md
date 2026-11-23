@@ -5,6 +5,17 @@ deployed to an NXP i.MX 8M Plus board (MYiR MYD-JX8MP) for performance work.
 
 The same source builds for both targets; only the CMake preset changes.
 
+Two ways to use it:
+
+- `scip-cli` runs one pipeline from the command line and reports where the
+  time goes (benchmarks, quick checks).
+- `scipd` runs on a target (the PC or the board) and is controlled over the
+  network with **AIPC**, the AMC Image Proc Control protocol
+  ([docs/aipc-protocol.md](docs/aipc-protocol.md)). The host GUI
+  ([host/aipc-gui](host/aipc-gui)) uses it to build the pipeline from the
+  functions the target offers, stream a video file to the target with player
+  controls, choose its outputs and watch the result.
+
 ## Layout
 
 ```
@@ -16,22 +27,31 @@ include/scip/        public headers
   sink.hpp             FrameSink: interface for outputs (display, video file, network)
   params.hpp           ParamSpec: self-describing function parameters
   registry.hpp         StageRegistry: all functions, pipeline text ("gray ! blur ksize=5")
-  io.hpp               openSource() / openSink() from URIs, image files, test patterns
+  io.hpp               openSource() / openSink() from URIs; cameras and displays
+  engine.hpp           Engine: input -> functions -> outputs, reconfigurable while running
+  aipc.hpp             the AIPC control interface (Service, Server)
   cv.hpp               zero-copy Frame <-> cv::Mat views
 src/
   core/                scip_core: depends only on the C++ standard library
-  stages/              scip_stages: processing stages (CPU reference, OpenCV)
+  stages/              scip_stages: processing functions (CPU reference, OpenCV)
+  gst/                 scip_gst: GStreamer helpers; scip_gststages: GStreamer filters as functions
   io/                  scip_io: sources and sinks
-    gst/               GStreamer: video files, camera, display, H.264 record / UDP
+    gst/               GStreamer: video files, camera, RTP, display, H.264 record / UDP
+  engine/              scip_engine: the running pipeline, on its own thread
+  aipc/                scip_aipc: JSON-RPC over TCP, UDP discovery, system information
   common/              internal helpers (not installed)
-apps/scip-cli/         command-line runner / benchmark tool
+apps/
+  scip-cli/            command-line runner / benchmark tool
+  scipd/               the target daemon, controlled over AIPC
+host/aipc-gui/         host GUI and `aipc` command (Python, PySide6, uv)
 tests/                 GoogleTest unit tests + CLI smoke tests
 cmake/                 warnings, sanitizers, build info, board toolchain file
 scripts/               deploy / run / test on the board
-docs/                  notes (board facts, design decisions)
+docs/                  board facts, the AIPC protocol
 ```
 
-Library dependencies only point downwards: `core` <- `stages`, `io` <- `apps`.
+Library dependencies only point downwards:
+`core` <- `stages`, `io` <- `engine` <- `aipc` <- `apps`.
 Hardware backends (NEON, OpenCL, G2D, NPU) will be added as more libraries
 next to `stages`, each behind a CMake option.
 
@@ -122,7 +142,9 @@ Pipelines are written like GStreamer launch lines: `gray ! blur ksize=5 ! resize
 | `pattern:WxH[:gray]` | generated test image, repeated (`-n`, default 100) |
 | `photo.png` / `.jpg` ... | still image, repeated |
 | `video.mp4` / `.mkv` / `.mov` ... | video file, until it ends (or `-n`) |
-| `camera:/dev/video0[:WxH]` | V4L2 camera, until Ctrl+C |
+| `camera:/dev/video0[:WxH]` | V4L2 camera, until Ctrl+C; `--list-devices` shows its sizes |
+| `rtp://:5000` | H.264 over RTP/UDP sent to this machine (live) |
+| `rtsp://...`, `http(s)://...` | network streams GStreamer can play |
 | `gst:'... ! appsink name=scip_sink'` | any GStreamer pipeline |
 
 | Output `-o` (repeatable) | |
@@ -165,16 +187,59 @@ The report separates where the time goes: `source (read)` (decode / waiting),
 each stage, and `outputs (write)`. On the board the VPU decoder library prints
 `ERROR: NO START CODE PREFIX` / `BYTE_STREAM` lines; they are harmless noise.
 
-## Adding a stage
+## Controlling a target: scipd, AIPC and the GUI
+
+`scipd` runs the engine and serves AIPC on TCP port 5600 (discovery on UDP
+5601). Everything can be changed while video runs: input, functions and their
+parameters, outputs.
+
+```bash
+build/host-debug/apps/scipd                     # on the PC
+scripts/deploy.sh && scripts/board-run.sh scipd --name board-1   # on the board
+```
+
+The GUI finds targets on the LAN (see [host/aipc-gui](host/aipc-gui) for setup):
+
+```bash
+cd host/aipc-gui && uv run aipc-gui
+```
+
+A typical session: choose *Video file streamed from this PC* as input, open a
+file in the player and press play; the target receives it on `rtp://:5000`.
+Add functions from the list, tune them with the generated controls, and watch
+the result, which the target sends back to the PC on UDP port 5002 (*Outputs*
+tab), side by side with what was sent. Statistics show the time per function.
+
+From the shell or scripts:
+
+```bash
+cd host/aipc-gui
+uv run aipc --discover
+uv run aipc 192.168.50.2 pipeline.set '{"text": "gray ! blur ksize=5"}'
+uv run aipc 192.168.50.2 stats.get
+```
+
+or by hand: `nc 192.168.50.2 5600` and type `{"jsonrpc":"2.0","id":1,"method":"system.info"}`.
+
+## Adding a function
+
+Each function registers itself with its parameters, and everything else
+follows: pipeline text, `--list-stages`, AIPC `functions.list` and the GUI's
+controls. See [src/stages/README.md](src/stages/README.md):
 
 1. Implement `scip::Stage` in `src/stages/<name>.cpp`:
    `configure()` validates the input and returns the output format;
    `process()` fills the pre-allocated output (no allocations per frame).
-2. Add a `make<Name>()` declaration to `include/scip/stages.hpp` and a spec case
-   to `src/stages/factory.cpp`.
+2. Describe it with a `StageInfo` (name, title, parameters) and
+   `SCIP_REGISTER_STAGE(...)` in the same file; add the file to
+   `src/stages/CMakeLists.txt`.
 3. Add tests in `tests/test_stages.cpp` that compare against a reference
    (OpenCV or the plain C++ version) with an explicit tolerance.
-4. Benchmark on the board with `scip-cli`.
+4. Benchmark on the board with `scip-cli` or watch it live with the GUI.
+
+GStreamer filter elements installed on a machine (`videoflip`, `gamma`, ...)
+are offered as functions too, their parameters read from the element's
+properties; `gst pipeline="..."` runs any chain of elements.
 
 ## Conventions
 
