@@ -106,6 +106,7 @@ struct Engine::Worker {
     void applyOutputs(const std::vector<std::string>& uris);
 
     void step();
+    void render(const Frame& frame, bool fresh);
     void configure(const FrameInfo& info);
     bool process(const Frame& frame, const Frame*& result);
     void write(const Frame& frame);
@@ -131,6 +132,11 @@ struct Engine::Worker {
     double pace = 0.0;           ///< frames per second for non-live sources, 0 = no limit
     Clock::time_point nextFrame;
     Clock::time_point lastFrame;
+    /// The last frame read (shared with the source, not copied). When the input
+    /// pauses, a change of functions or outputs is shown on it, so a host can
+    /// tune a paused video. Released before the source goes away.
+    Frame lastInput;
+    bool rerender = false;  ///< show changes on lastInput if no new frame comes
 
     EngineState state = EngineState::Idle;
     std::string message = "no input";
@@ -193,6 +199,7 @@ void Engine::Worker::run()
     }
     // Source first: a pipeline that feeds a display through G2D must stop
     // producing before the display goes away.
+    lastInput = Frame();
     source.reset();
     closeOutputs();
     setState(EngineState::Idle, "stopped");
@@ -201,6 +208,7 @@ void Engine::Worker::run()
 
 void Engine::Worker::applyInput(InputConfig config)
 {
+    lastInput = Frame();
     source.reset();
     input = std::move(config);
     configured = false;
@@ -256,6 +264,7 @@ void Engine::Worker::applyPipeline(const std::vector<StageEntry>& entries)
     }
     stages = std::move(next);
     configured = false;
+    rerender = true;
     dirty = true;
 }
 
@@ -267,6 +276,7 @@ void Engine::Worker::applyOutputs(const std::vector<std::string>& uris)
         outputs.push_back(ActiveOutput{uri, nullptr, {}});
     }
     outputsPending = true;
+    rerender = true;
     dirty = true;
 }
 
@@ -291,6 +301,7 @@ void Engine::Worker::step()
     try {
         status = source->tryRead(frame, kReadTimeout);
     } catch (...) {
+        lastInput = Frame();
         source.reset();
         setState(EngineState::Error, "input failed: " + errorText(std::current_exception()));
         return;
@@ -299,9 +310,13 @@ void Engine::Worker::step()
         if (Clock::now() - lastFrame > kStallAfter) {
             setState(EngineState::Waiting, frames == 0 ? "" : "no frames from the input");
         }
+        if (rerender && !lastInput.empty()) {
+            render(lastInput, false);  // paused input: show the change anyway
+        }
         return;
     }
     if (status == ReadStatus::End) {
+        lastInput = Frame();
         source.reset();
         // Finish recordings; outputs reopen when a new input starts.
         closeOutputs();
@@ -312,22 +327,32 @@ void Engine::Worker::step()
     const auto readEnd = Clock::now();
     readTime.add(readEnd - readStart);
     lastFrame = readEnd;
+    lastInput = frame;
+    render(frame, true);
+}
 
+/// Process a frame and write the result. `fresh` = just read; a repeat of the
+/// last frame (input paused) is kept out of the frame count and timings.
+void Engine::Worker::render(const Frame& frame, bool fresh)
+{
+    rerender = false;
     if (!configured || frame.info() != configuredFor) {
         configure(frame.info());
     }
 
+    const auto start = Clock::now();
     const Frame* result = &frame;
     if (!process(frame, result)) {
         return;  // a stage failed on this frame; it is bypassed from the next one
     }
     const auto processEnd = Clock::now();
-    processTime.add(processEnd - readEnd);
-
     write(*result);
+    if (!fresh) {
+        return;
+    }
     const auto writeEnd = Clock::now();
+    processTime.add(processEnd - start);
     writeTime.add(writeEnd - processEnd);
-
     ++frames;
     recent.push_back(writeEnd);
     setState(EngineState::Running);

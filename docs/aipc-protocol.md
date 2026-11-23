@@ -296,7 +296,10 @@ the answer; `add` and `update` also return the stage they touched.
 | `pipeline.move` | `id`, `index` (0 = first; clamped) | `Pipeline` |
 | `pipeline.clear` | | `Pipeline` |
 
-Changes apply between two frames. If a stage cannot process the current
+Changes apply between two frames. When the input pauses (the GUI's player is
+paused, a live sender stopped), a change is applied to the last frame and the
+result sent to the outputs at once, so a paused video can be tuned; these
+repeats do not count in `frames` or `fps`. If a stage cannot process the current
 frames (e.g. `clahe` needs `gray8` but gets `bgr8`), the command still
 succeeds: the stage is *bypassed* and `stats.get` reports its `error`. That
 keeps the video running while you experiment.

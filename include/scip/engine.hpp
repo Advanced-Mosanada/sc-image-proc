@@ -6,6 +6,8 @@
 //
 // Commands validate what they can immediately (unknown function, bad parameter
 // -> std::invalid_argument) and are applied by the worker between two frames.
+// When the input pauses, a change of functions or outputs is applied to the
+// last frame at once, so a paused video can be tuned.
 // Problems that only show with real frames (a stage rejecting the format, an
 // output that cannot open) do not stop the video: the stage is bypassed or the
 // output dropped, and the error is reported in status().

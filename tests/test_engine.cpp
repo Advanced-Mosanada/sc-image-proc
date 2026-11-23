@@ -189,3 +189,55 @@ TEST(Engine, WritesOutputsAndClosesThemWhenRemoved)
     waitFor(engine, [&](const EngineStatus&) { return std::filesystem::exists(path); });
     std::filesystem::remove(path);
 }
+
+TEST(Engine, ShowsChangesWhileTheInputIsPaused)
+{
+    // A host pauses its video and tunes the functions: the change must reach the
+    // outputs on the last frame, without waiting for the next one.
+    if (!scip::io::hasGStreamer()) {
+        GTEST_SKIP() << "built without GStreamer";
+    }
+    const FrameInfo info{64, 64, PixelFormat::Bgr8};
+    scip::FrameSinkPtr sender;
+    try {
+        sender = scip::io::openSink("udp:127.0.0.1:47394", info, 30.0);
+    } catch (const std::exception& e) {
+        GTEST_SKIP() << e.what();  // no H.264 encoder here
+    }
+    const auto path = std::filesystem::temp_directory_path() / "scip_test_paused.png";
+    std::filesystem::remove(path);
+
+    Engine engine;
+    scip::InputConfig input;
+    input.uri = "rtp://127.0.0.1:47394";
+    engine.setInput(input);
+    engine.setOutputs({path.string()});
+    engine.start();
+
+    const scip::Frame frame = scip::io::makeTestPattern(info);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (engine.status().frames < 5 && std::chrono::steady_clock::now() < deadline) {
+        sender->write(frame);
+        std::this_thread::sleep_for(std::chrono::milliseconds(33));
+    }
+    ASSERT_GE(engine.status().frames, 5u);
+    // Paused: the sender stays open but sends nothing more.
+    const auto framesBefore = waitFor(engine, [](const EngineStatus& s) {
+                                  return s.state == EngineState::Waiting;
+                              }).frames;
+
+    engine.setPipeline(registry().parseChain("gray"));
+    const EngineStatus status = waitFor(engine, [](const EngineStatus& s) {
+        return s.stages.size() == 1 && s.stages[0].meanMs > 0.0;  // ran on the last frame
+    });
+    EXPECT_EQ(status.frames, framesBefore);  // a repeat, not a new frame
+
+    // The format change reopened the image output, and closing the old one
+    // wrote its last (BGR) frame: start from no file.
+    std::filesystem::remove(path);
+    engine.setOutputs({});  // the image output writes what it got last
+    waitFor(engine, [&](const EngineStatus&) { return std::filesystem::exists(path); });
+    EXPECT_EQ(scip::io::readImage(path.string()).format(), PixelFormat::Gray8);
+    std::filesystem::remove(path);
+    sender->close();
+}
