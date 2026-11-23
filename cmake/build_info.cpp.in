@@ -1,0 +1,22 @@
+// Generated at build time from cmake/build_info.cpp.in. Do not edit.
+#include "scip/build_info.hpp"
+
+namespace scip::build {
+
+const Info& info()
+{
+    static const Info value{
+        "@SCIP_VERSION@",
+        "@SCIP_GIT_COMMIT@",
+        "@SCIP_GIT_DESCRIBE@",
+        "@SCIP_GIT_BRANCH@",
+        "@SCIP_GIT_DATE@",
+        @SCIP_GIT_DIRTY@,
+        "@SCIP_TARGET_CPU@",
+        "@SCIP_BUILD_TYPE@",
+        "@SCIP_COMPILER@",
+    };
+    return value;
+}
+
+}  // namespace scip::build

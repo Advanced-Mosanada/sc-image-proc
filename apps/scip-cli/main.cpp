@@ -81,12 +81,15 @@ void printUsage()
 
 void printVersion()
 {
-    std::printf("scip %s (%s) %s %s, %s%s\n",
-                scip::build::kVersion,
-                scip::build::kGitHash,
-                scip::build::kTargetCpu,
-                scip::build::kBuildType,
-                scip::build::kCompiler,
+    const scip::build::Info& build = scip::build::info();
+    std::printf("scip %s (%s%s%s) %s %s, %s%s\n",
+                build.version,
+                build.describe,
+                build.branch[0] != '\0' ? " on " : "",
+                build.branch,
+                build.targetCpu,
+                build.buildType,
+                build.compiler,
                 scip::io::hasGStreamer() ? ", GStreamer" : "");
 }
 
