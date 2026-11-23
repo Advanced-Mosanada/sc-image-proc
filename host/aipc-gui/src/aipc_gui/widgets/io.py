@@ -4,35 +4,47 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QSpinBox,
-    QStackedWidget,
+    QStyle,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
 )
 
+from .. import theme
+from ..icons import icon, pixmap
 from ..protocol import VIDEO_FROM_TARGET_PORT, VIDEO_TO_TARGET_PORT
 from ..qt_client import QtAipcClient
+from .common import Card, tool_button
 
-# Input kinds, in the order of the combo box.
+# Input kinds, in the order of the list.
 FROM_PC, CAMERA, TARGET_FILE, NETWORK, PATTERN = range(5)
-KIND_LABELS = [
-    "Video file streamed from this PC",
-    "Camera on the target",
-    "File or URL on the target",
-    "RTP stream from another sender",
-    "Test pattern",
+KINDS = [
+    ("film", "Video from this PC", "Streamed by the player below the videos"),
+    ("camera", "Camera on the target", "A V4L2 camera and its mode"),
+    ("file", "File or URL on the target", "A video on the target, or rtsp://, http://"),
+    ("network", "RTP stream", "H.264 sent to the target by another sender"),
+    ("pattern", "Test pattern", "Generated on the target"),
 ]
+KIND_LABELS = [title for _, title, _ in KINDS]
+CHOICE_HEIGHT = 46
+
+
+def describe_uri(uri: str) -> str:
+    return uri or "(none)"
 
 
 def port_box(value: int) -> QSpinBox:
@@ -41,95 +53,200 @@ def port_box(value: int) -> QSpinBox:
     return box
 
 
-def describe_uri(uri: str) -> str:
-    return uri or "(none)"
+class ChoiceDelegate(QStyledItemDelegate):
+    """Icon, title and a muted subtitle per row."""
+
+    def sizeHint(self, option, index) -> QSize:
+        return QSize(200, CHOICE_HEIGHT)
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        t = theme.current()
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = option.rect.adjusted(2, 2, -2, -2)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        if selected or hovered:
+            fill = QColor(t.accent if selected else t.hover)
+            if selected:
+                fill.setAlpha(50 if t.dark else 35)
+            painter.setPen(QColor(t.accent) if selected else Qt.PenStyle.NoPen)
+            painter.setBrush(fill)
+            painter.drawRoundedRect(rect, 8, 8)
+        name, title, subtitle = index.data(Qt.ItemDataRole.UserRole)
+        painter.drawPixmap(
+            rect.left() + 10,
+            rect.center().y() - 10,
+            pixmap(name, t.accent if selected else t.muted, 20),
+        )
+        left = rect.left() + 42
+        font = QFont(option.font)
+        font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(font)
+        painter.setPen(QColor(t.text))
+        painter.drawText(
+            QRect(left, rect.top() + 4, rect.width() - 50, 20), Qt.AlignmentFlag.AlignVCenter, title
+        )
+        font.setWeight(QFont.Weight.Normal)
+        font.setPointSizeF(font.pointSizeF() - 1)
+        painter.setFont(font)
+        painter.setPen(QColor(t.muted))
+        painter.drawText(
+            QRect(left, rect.top() + 22, rect.width() - 50, 18),
+            Qt.AlignmentFlag.AlignVCenter,
+            subtitle,
+        )
+        painter.restore()
 
 
-class InputPanel(QWidget):
+class ChoiceList(QListWidget):
+    """A list of choices with the API of a combo box (currentIndex...)."""
+
+    currentIndexChanged = Signal(int)
+
+    def __init__(self, choices: list[tuple[str, str, str]]):
+        super().__init__()
+        self.setItemDelegate(ChoiceDelegate(self))
+        self.setMouseTracking(True)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        for choice in choices:
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, choice)
+            self.addItem(item)
+        self.setFixedHeight(len(choices) * CHOICE_HEIGHT + 12)
+        self.currentRowChanged.connect(self.currentIndexChanged.emit)
+        self.setCurrentRow(0)
+
+    def currentIndex(self) -> int:
+        return self.currentRow()
+
+    def setCurrentIndex(self, index: int) -> None:
+        self.setCurrentRow(index)
+
+
+class Pages(QWidget):
+    """Shows one page at a time and is as tall as that page.
+
+    (A QStackedWidget keeps room for its tallest page.)
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.layout_ = QVBoxLayout(self)
+        self.layout_.setContentsMargins(0, 0, 0, 0)
+        self.pages: list[QWidget] = []
+
+    def add_form(self) -> QFormLayout:
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setVerticalSpacing(8)
+        page.setVisible(not self.pages)
+        self.layout_.addWidget(page)
+        self.pages.append(page)
+        return form
+
+    def setCurrentIndex(self, index: int) -> None:
+        for i, page in enumerate(self.pages):
+            page.setVisible(i == index)
+
+
+class InputPanel(QScrollArea):
     """Chooses the target's input; `streaming_from_pc` tells the player to send."""
 
     streaming_from_pc = Signal(bool, int)  # on, port
 
     def __init__(self, client: QtAipcClient, parent: QWidget | None = None):
         super().__init__(parent)
+        self.setWidgetResizable(True)
         self.client = client
         self.cameras: list[dict[str, Any]] = []
-        layout = QVBoxLayout(self)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        self.setWidget(content)
 
-        self.kind = QComboBox()
-        self.kind.addItems(KIND_LABELS)
-        self.kind.currentIndexChanged.connect(lambda i: self.pages.setCurrentIndex(i))
-        layout.addWidget(self.kind)
+        source = Card("Source", "Where the target's frames come from")
+        self.kind = ChoiceList(KINDS)
+        source.body.addWidget(self.kind)
+        layout.addWidget(source)
 
-        self.pages = QStackedWidget()
-        layout.addWidget(self.pages)
+        self.settings_card = Card("Settings")
+        self.pages = Pages()
+        self.settings_card.body.addWidget(self.pages)
+        layout.addWidget(self.settings_card)
 
         # From this PC: the player sends to rtp://:PORT on the target.
-        page = QWidget()
-        form = QFormLayout(page)
+        form = self.pages.add_form()
         self.pc_port = port_box(VIDEO_TO_TARGET_PORT)
         form.addRow("RTP port on the target", self.pc_port)
-        form.addRow(QLabel("Open a file in the player and press play."))
-        self.pages.addWidget(page)
+        hint = QLabel("Then open a video in the player and press play.")
+        hint.setObjectName("muted")
+        form.addRow(hint)
 
         # Camera on the target.
-        page = QWidget()
-        form = QFormLayout(page)
+        form = self.pages.add_form()
         self.camera = QComboBox()
         self.camera.currentIndexChanged.connect(self._fill_modes)
+        camera_row = QHBoxLayout()
+        camera_row.addWidget(self.camera, 1)
+        camera_row.addWidget(tool_button("refresh", "Look for cameras again", self.refresh_devices))
+        form.addRow("Camera", camera_row)
         self.mode = QComboBox()
-        refresh = QPushButton("Refresh")
-        refresh.clicked.connect(self.refresh_devices)
-        row = QHBoxLayout()
-        row.addWidget(self.camera, 1)
-        row.addWidget(refresh)
-        form.addRow("Camera", row)
         form.addRow("Mode", self.mode)
-        self.pages.addWidget(page)
 
         # File or URL on the target.
-        page = QWidget()
-        form = QFormLayout(page)
+        form = self.pages.add_form()
         self.target_uri = QLineEdit(placeholderText="/home/root/videos/clip.mp4 or rtsp://...")
-        self.realtime = QCheckBox("At its frame rate (else as fast as possible)", checked=True)
+        self.realtime = QCheckBox("Play at its frame rate", checked=True)
+        self.realtime.setToolTip("Off: as fast as the target can (to measure)")
         self.target_loop = QCheckBox("Loop")
-        form.addRow("Path / URL", self.target_uri)
+        form.addRow("Path or URL", self.target_uri)
         form.addRow(self.realtime)
         form.addRow(self.target_loop)
-        self.pages.addWidget(page)
 
         # RTP from another sender (a camera, ffmpeg, another target).
-        page = QWidget()
-        form = QFormLayout(page)
+        form = self.pages.add_form()
         self.network_port = port_box(VIDEO_TO_TARGET_PORT)
         form.addRow("RTP port on the target", self.network_port)
-        self.pages.addWidget(page)
 
         # Pattern.
-        page = QWidget()
-        form = QFormLayout(page)
+        form = self.pages.add_form()
         self.pattern_size = QComboBox(editable=True)
         self.pattern_size.addItems(["640x480", "1280x720", "1920x1080", "3840x2160"])
         self.pattern_size.setCurrentText("1280x720")
         self.pattern_fps = QSpinBox(minimum=1, maximum=1000, value=30)
+        self.pattern_fps.setSuffix(" fps")
         form.addRow("Size", self.pattern_size)
-        form.addRow("Frames per second", self.pattern_fps)
-        self.pages.addWidget(page)
+        form.addRow("Rate", self.pattern_fps)
 
-        self.gray = QCheckBox("Decode to gray (cheaper when the pipeline starts with gray)")
-        layout.addWidget(self.gray)
-        buttons = QHBoxLayout()
+        self.gray = QCheckBox("Decode to gray")
+        self.gray.setToolTip("Cheaper when the pipeline starts with 'gray' anyway")
+        self.settings_card.body.addWidget(self.gray)
         apply = QPushButton("Use this input")
+        apply.setObjectName("primary")
         apply.clicked.connect(self.apply)
         stop = QPushButton("No input")
         stop.clicked.connect(lambda: self._set({"uri": ""}))
-        buttons.addWidget(apply)
+        buttons = QHBoxLayout()
         buttons.addWidget(stop)
-        layout.addLayout(buttons)
+        buttons.addStretch()
+        buttons.addWidget(apply)
+        self.settings_card.body.addLayout(buttons)
+
         self.current = QLabel()
+        self.current.setObjectName("muted")
         self.current.setWordWrap(True)
+        self.current.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.current)
-        layout.addStretch()
+        layout.addStretch(1)  # spare height goes here, not into the cards
+        self.kind.currentIndexChanged.connect(self._kind_changed)
+        self._kind_changed(0)
+
+    def _kind_changed(self, index: int) -> None:
+        self.pages.setCurrentIndex(index)
+        self.settings_card.title.setText(KIND_LABELS[index])
 
     # --- from the target ----------------------------------------------------
 
@@ -141,14 +258,16 @@ class InputPanel(QWidget):
         self.camera.blockSignals(True)
         self.camera.clear()
         for camera in self.cameras:
-            self.camera.addItem(f"{camera['name']} ({camera['path']})")
+            self.camera.addItem(f"{camera['name']}  ({camera['path']})")
+        if not self.cameras:
+            self.camera.addItem("no camera found")
         self.camera.blockSignals(False)
         self._fill_modes()
 
     def set_input(self, current: dict[str, Any]) -> None:
         """Show the target's input (also when another GUI changed it)."""
         uri = current.get("uri", "")
-        self.current.setText(f"Current input: <b>{describe_uri(uri)}</b>")
+        self.current.setText(f"Target input: <b>{describe_uri(uri)}</b>")
         self.gray.setChecked(bool(current.get("gray")))
         port = self._rtp_port(uri)
         if port is not None:
@@ -186,7 +305,7 @@ class InputPanel(QWidget):
         elif kind == CAMERA:
             mode = self.mode.currentData()
             if not mode:
-                self.current.setText("No camera on the target.")
+                self._show_error("No camera on the target.")
                 return
             params["uri"] = mode
         elif kind == TARGET_FILE:
@@ -207,10 +326,11 @@ class InputPanel(QWidget):
             "input.set",
             params,
             on_result=self.set_input,
-            on_error=lambda e: self.current.setText(
-                f"<span style='color:#c62828'>{e.message}</span>"
-            ),
+            on_error=lambda e: self._show_error(e.message),
         )
+
+    def _show_error(self, text: str) -> None:
+        self.current.setText(f"<span style='color:{theme.current().danger}'>{text}</span>")
 
     def _fill_modes(self) -> None:
         self.mode.clear()
@@ -221,7 +341,7 @@ class InputPanel(QWidget):
         best = 0  # preselect the largest mode that still runs at 25 fps or more
         for i, mode in enumerate(camera.get("modes", [])):
             self.mode.addItem(
-                f"{mode['width']}x{mode['height']} @ {mode['fps']:g} fps", mode["uri"]
+                f"{mode['width']}×{mode['height']}  ·  {mode['fps']:g} fps", mode["uri"]
             )
             if mode["fps"] >= 25 and not best:
                 best = i
@@ -238,53 +358,83 @@ class InputPanel(QWidget):
         return None
 
 
-class OutputPanel(QWidget):
+class IconLabel(QLabel):
+    """A small icon in the theme's muted colour."""
+
+    def __init__(self, name: str):
+        super().__init__()
+        self.name = name
+        self.setFixedWidth(22)
+        self._paint()
+        theme.follow(self, lambda _t: self._paint())
+
+    def _paint(self) -> None:
+        self.setPixmap(pixmap(self.name, theme.current().muted, 18))
+
+
+def option_row(icon_name: str, check: QCheckBox, *controls: QWidget) -> QHBoxLayout:
+    """An output option: icon, check box, then its settings."""
+    row = QHBoxLayout()
+    row.setSpacing(8)
+    row.addWidget(IconLabel(icon_name))
+    row.addWidget(check)
+    row.addStretch()
+    for control in controls:
+        row.addWidget(control)
+    return row
+
+
+class OutputPanel(QScrollArea):
     """The target's outputs. `preview_port` is 0 when the result is not sent here."""
 
     preview_port = Signal(int)
 
     def __init__(self, client: QtAipcClient, parent: QWidget | None = None):
         super().__init__(parent)
+        self.setWidgetResizable(True)
         self.client = client
         self.outputs: list[str] = []
-        layout = QVBoxLayout(self)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        self.setWidget(content)
 
-        box = QGroupBox("Outputs of the target")
-        form = QFormLayout(box)
-        self.to_pc = QCheckBox("Send the result to this PC")
+        card = Card("Send the result to", "Any combination, applied with the button")
+        self.to_pc = QCheckBox("This PC (the right view)")
         self.to_pc.setChecked(True)
         self.to_pc_port = port_box(VIDEO_FROM_TARGET_PORT)
-        row = QHBoxLayout()
-        row.addWidget(self.to_pc)
-        row.addWidget(QLabel("port"))
-        row.addWidget(self.to_pc_port)
-        form.addRow(row)
+        self.to_pc_port.setPrefix("port ")
+        card.body.addLayout(option_row("send", self.to_pc, self.to_pc_port))
 
-        self.display = QCheckBox("Show on the target's display")
+        self.display = QCheckBox("The target's display")
         self.display_choice = QComboBox()
-        row = QHBoxLayout()
-        row.addWidget(self.display)
-        row.addWidget(self.display_choice, 1)
-        form.addRow(row)
+        self.display_choice.setMinimumWidth(170)
+        card.body.addLayout(option_row("monitor", self.display, self.display_choice))
 
-        self.record = QCheckBox("Record on the target")
+        self.record = QCheckBox("A recording on the target")
+        card.body.addLayout(option_row("record", self.record))
         self.record_path = QLineEdit("/tmp/scip-record.mp4")
-        row = QHBoxLayout()
-        row.addWidget(self.record)
-        row.addWidget(self.record_path, 1)
-        form.addRow(row)
+        self.record_path.setToolTip(".mp4 or .mkv; finished when the output is removed")
+        card.body.addWidget(self.record_path)
 
-        self.extra = QLineEdit(placeholderText="more outputs, comma separated (udp:HOST:PORT, ...)")
-        form.addRow("Other", self.extra)
-        layout.addWidget(box)
-
+        self.extra = QLineEdit(placeholderText="More outputs, comma separated: udp:HOST:PORT, ...")
+        card.body.addWidget(self.extra)
         apply = QPushButton("Apply outputs")
+        apply.setObjectName("primary")
         apply.clicked.connect(self.apply)
-        layout.addWidget(apply)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(apply)
+        card.body.addLayout(buttons)
+        layout.addWidget(card)
 
+        status_card = Card("Status")
         self.status = QListWidget()
-        layout.addWidget(QLabel("Status"))
-        layout.addWidget(self.status, 1)
+        self.status.setMinimumHeight(110)
+        status_card.body.addWidget(self.status)
+        layout.addWidget(status_card)
+        layout.addStretch()
 
     # --- from the target ----------------------------------------------------
 
@@ -294,8 +444,8 @@ class OutputPanel(QWidget):
         if displays.get("window_system"):
             self.display_choice.addItem("a window", "display")
         for d in displays.get("displays", []):
-            state = f"{d['width']}x{d['height']}" if d["connected"] else "not connected"
-            self.display_choice.addItem(f"{d['name']} ({state})", d["uri"])
+            state = f"{d['width']}×{d['height']}" if d["connected"] else "not connected"
+            self.display_choice.addItem(f"{d['name']}  ·  {state}", d["uri"])
         if self.display_choice.count() == 0:
             self.display_choice.addItem("default", "display")
         if current:
@@ -323,15 +473,28 @@ class OutputPanel(QWidget):
         self.preview_port.emit(self.to_pc_port.value() if here in self.outputs else 0)
 
     def update_status(self, stats: dict[str, Any]) -> None:
+        t = theme.current()
         self.status.clear()
-        for output in stats.get("outputs", []):
+        outputs = stats.get("outputs", [])
+        if not outputs:
+            item = QListWidgetItem("No outputs: the result goes nowhere")
+            item.setForeground(QColor(t.muted))
+            self.status.addItem(item)
+        for output in outputs:
             if output["error"]:
-                text = f"⚠ {output['uri']}: {output['error']}"
+                item = QListWidgetItem(
+                    icon("close", t.danger), f"{output['uri']}: {output['error']}"
+                )
+                item.setForeground(QColor(t.danger))
             elif output["active"]:
-                text = f"✓ {output['description'] or output['uri']}"
+                text = output["description"] or output["uri"]
+                item = QListWidgetItem(icon("send", t.success), text)
             else:
-                text = f"… {output['uri']} (opens with the first frame)"
-            self.status.addItem(text)
+                text = f"{output['uri']}  (opens with the first frame)"
+                item = QListWidgetItem(icon("refresh", t.muted), text)
+                item.setForeground(QColor(t.muted))
+            item.setToolTip(item.text())
+            self.status.addItem(item)
 
     # --- user -----------------------------------------------------------------
 
@@ -348,8 +511,15 @@ class OutputPanel(QWidget):
             "output.set",
             {"outputs": outputs},
             on_result=self.set_outputs,
-            on_error=lambda e: (self.status.clear(), self.status.addItem(f"⚠ {e.message}")),
+            on_error=self._show_error,
         )
+
+    def _show_error(self, error) -> None:
+        t = theme.current()
+        self.status.clear()
+        item = QListWidgetItem(icon("close", t.danger), error.message)
+        item.setForeground(QColor(t.danger))
+        self.status.addItem(item)
 
     def _to_pc_uri(self) -> str:
         return f"udp:{self.client.local_address}:{self.to_pc_port.value()}"
