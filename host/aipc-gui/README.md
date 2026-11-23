@@ -9,6 +9,8 @@ AMC Image Proc Control protocol ([docs/aipc-protocol.md](../../docs/aipc-protoco
   and watch the result.
 - `aipc`: one AIPC call from the shell, for scripts and quick checks.
 
+![aipc-gui, dark theme](docs/screenshot-dark.png)
+
 ## Setup
 
 Python packages come from PyPI through [uv](https://docs.astral.sh/uv/).
@@ -40,10 +42,26 @@ uv run aipc 192.168.50.2 system.info
 uv run aipc 192.168.50.2 pipeline.set '{"text": "gray ! blur ksize=5"}'
 ```
 
+- **Theme**: dark, light, or like the desktop: the sun/moon button in the
+  header (Ctrl+T), or `--theme dark`. The choice is remembered.
+- **Keys**: Space play/pause, ←/→ back/forward 5 s, Home to the start,
+  Ctrl+O open a video (or drop it on the left view), Ctrl+D discover,
+  Ctrl+K connect, Ctrl+F search the functions. The ⓘ button lists them.
+- **Remembered** between runs (`~/.config/scip/aipc-gui.conf`): theme, last
+  target (preferred when discovering), window layout, the player's folder.
+
+![aipc-gui, light theme, statistics](docs/screenshot-light.png)
+
 On the target, run `scipd` (the build's `apps/scipd` on the PC, or
 `scripts/board-run.sh scipd` for the board).
 
 ## Development
+
+The look comes from one place: `theme.py` holds the dark and light colours and
+builds a Qt style sheet from them; widgets pick their style by object name
+(`card`, `primary`, `muted`...). Icons are small SVGs in `icons.py`, drawn in
+the theme's colours. Widgets that paint themselves call `theme.follow()` to
+repaint when the theme changes.
 
 ```bash
 uv run pytest          # starts the scipd of build/host-debug (or $SCIPD)
