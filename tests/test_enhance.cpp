@@ -95,7 +95,10 @@ const char* const kNewFunctions[] = {
     "nlmeans",
     "temporal_mean",
     "tnr",
+    "unsharp",
+    "sharpen",
     "temporal_median",
+    "detail",
 };
 
 }  // namespace
@@ -339,4 +342,46 @@ TEST(Temporal, TnrRemovesNoiseButFollowsMotion)
     // Something moves in: a change far above the noise level is taken at once.
     const Frame moved = uniform(info, 228);
     EXPECT_EQ(cv::norm(scip::asMat(next(*stage, moved)), scip::asMat(moved), cv::NORM_INF), 0.0);
+}
+
+// --- sharpening -----------------------------------------------------------------
+
+TEST(Sharpen, UnsharpMatchesTheFormulaAndRespectsTheThreshold)
+{
+    const Frame input = noisy(FrameInfo{40, 30, PixelFormat::Gray8}, 120, 20.0, 7);
+    cv::Mat blurred;
+    cv::GaussianBlur(scip::asMat(input), blurred, cv::Size(), 1.5, 1.5, cv::BORDER_REFLECT_101);
+    cv::Mat reference;
+    cv::addWeighted(scip::asMat(input), 2.0, blurred, -1.0, 0.0, reference);
+    const Frame out = run(*make("unsharp amount=1 sigma=1.5"), input);
+    EXPECT_EQ(cv::norm(scip::asMat(out), reference, cv::NORM_INF), 0.0);
+
+    // Small noise below the threshold is left exactly as it was.
+    const Frame grain = noisy(FrameInfo{40, 30, PixelFormat::Gray8}, 120, 1.0, 8);
+    const Frame kept = run(*make("unsharp amount=2 threshold=10"), grain);
+    EXPECT_EQ(cv::norm(scip::asMat(kept), scip::asMat(grain), cv::NORM_INF), 0.0);
+}
+
+TEST(Sharpen, EdgesGetSteeperFlatAreasStay)
+{
+    const Frame edge = step(FrameInfo{40, 10, PixelFormat::Gray8}, 100, 150);
+    for (const char* sharpener : {"sharpen amount=1",
+                                  "sharpen amount=1 neighbours=8",
+                                  "unsharp amount=1",
+                                  "detail gain=3 radius=4 eps=0.1"}) {
+        const Frame out = run(*make(sharpener), edge);
+        EXPECT_LT(out.row(5)[19], 100) << sharpener;  // undershoot before the edge
+        EXPECT_GT(out.row(5)[20], 150) << sharpener;  // overshoot after it
+        EXPECT_EQ(out.row(5)[2], 100) << sharpener;   // flat areas unchanged
+        EXPECT_EQ(out.row(5)[37], 150) << sharpener;
+    }
+}
+
+TEST(Sharpen, DetailWithGainOneChangesNothing)
+{
+    const Frame input = noisy(FrameInfo{40, 30, PixelFormat::Bgr8}, 120, 20.0, 9);
+    const Frame out = run(*make("detail gain=1"), input);
+    EXPECT_LE(cv::norm(scip::asMat(out), scip::asMat(input), cv::NORM_INF), 1.0);
+    const Frame boosted = run(*make("detail gain=3"), input);
+    EXPECT_GT(deviation(scip::asMat(boosted)), deviation(scip::asMat(input)));
 }

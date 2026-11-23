@@ -23,6 +23,10 @@ add_library(scip_stages OBJECT
     temporal_mean.cpp
     temporal_median.cpp
     tnr.cpp
+    # sharpening
+    detail.cpp
+    sharpen.cpp
+    unsharp.cpp
     # other
     edges.cpp
     invert.cpp
