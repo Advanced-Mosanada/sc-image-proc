@@ -76,7 +76,7 @@ class MainWindow(QMainWindow):
         self.pipeline = PipelinePanel(self.client)
         self.sent_view = VideoView("Sent from this PC")
         self.result_view = VideoView("Result from the target")
-        self.player = PlayerPanel(on_frame=self.sent_view.bridge.deliver)
+        self.player = PlayerPanel(on_frame=self.sent_view.show_frame)
         self.player.message.connect(self.show_message)
         self.inputs = InputPanel(self.client)
         self.inputs.streaming_from_pc.connect(self._streaming_from_pc)
@@ -114,7 +114,7 @@ class MainWindow(QMainWindow):
         self.discovery.found.connect(self._found)
         self.discovery.finished.connect(self._discovery_finished)
 
-        self.poll_timer = QTimer(self, interval=100)
+        self.poll_timer = QTimer(self, interval=15)  # > 60 fps
         self.poll_timer.timeout.connect(self._poll)
         self.poll_timer.start()
         self._set_connected(False)
@@ -248,7 +248,7 @@ class MainWindow(QMainWindow):
             self.receiver = None
             self.result_view.clear()
         if port and media.available():
-            self.receiver = media.RtpReceiver(port, on_frame=self.result_view.bridge.deliver)
+            self.receiver = media.RtpReceiver(port, on_frame=self.result_view.show_frame)
             self.receiver.start()
             self.result_view.clear(f"waiting for the target on udp port {port}...")
         elif port:

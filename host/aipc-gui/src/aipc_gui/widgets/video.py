@@ -1,27 +1,14 @@
-"""Shows frames from GStreamer threads, scaled to fit, with a caption."""
+"""Shows frames scaled to fit, with a caption."""
 
 from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QObject, QRectF, Qt, Signal
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..media import Frame
-
-
-class FrameBridge(QObject):
-    """Moves frames from GStreamer's threads to the GUI thread.
-
-    A signal emitted from another thread is queued to the receiver's thread,
-    so `deliver` can be passed to GStreamer as a callback.
-    """
-
-    frame = Signal(object)
-
-    def deliver(self, frame: Frame) -> None:
-        self.frame.emit(frame)
 
 
 class VideoView(QWidget):
@@ -30,8 +17,6 @@ class VideoView(QWidget):
         self.title = title
         self.image: QImage | None = None
         self.placeholder = "no video"
-        self.bridge = FrameBridge(self)
-        self.bridge.frame.connect(self.show_frame)
         self._times: list[float] = []
         self.setMinimumSize(240, 160)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)

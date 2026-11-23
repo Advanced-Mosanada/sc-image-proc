@@ -6,9 +6,11 @@ Streamer     a local video file -> H.264 over RTP/UDP to the target's
 RtpReceiver  H.264 over RTP/UDP from the target's output udp:HOST:5002 ->
              frames for display.
 
-Frames are handed out as `Frame` (RGBx bytes) from GStreamer's threads; the
-GUI turns them into QImages on its own thread. Bus messages are handled in
-`poll()`, which the GUI calls from a timer, so no GLib main loop is needed.
+Everything happens in `poll()`, which the GUI calls from a timer on its own
+thread: bus messages are handled and the newest frame is pulled from the
+appsink and handed to `on_frame` as `Frame` (RGBx bytes). No Python runs on
+GStreamer's streaming threads (a Python callback there halved the preview
+rate: every frame had to wait for the GIL), and no GLib main loop is needed.
 
 Looping uses *segment seeks*: GStreamer reports SEGMENT_DONE at the end of the
 range and we seek back without flushing. The running time, and with it the
@@ -18,7 +20,6 @@ never notices the jump.
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,7 +63,7 @@ class Frame:
     data: bytes
 
 
-FrameCallback = Callable[[Frame], None]
+FrameCallback = Callable[[Frame], None]  # called from poll(), on the caller's thread
 
 
 def _frame_from_sample(sample) -> Frame | None:
@@ -82,18 +83,10 @@ def _frame_from_sample(sample) -> Frame | None:
     return Frame(width, height, len(data) // height if height else 0, data)
 
 
-def _attach_appsink(pipeline, name: str, on_frame: FrameCallback | None) -> None:
-    sink = pipeline.get_by_name(name)
-
-    def new_sample(appsink):
-        sample = appsink.emit("pull-sample")
-        if sample is not None and on_frame is not None:
-            frame = _frame_from_sample(sample)
-            if frame is not None:
-                on_frame(frame)
-        return Gst.FlowReturn.OK
-
-    sink.connect("new-sample", new_sample)
+def _pull_frame(pipeline, name: str) -> Frame | None:
+    """The newest frame of an appsink (max-buffers=1 drop=true), without waiting."""
+    sample = pipeline.get_by_name(name).emit("try-pull-sample", 0)
+    return _frame_from_sample(sample) if sample is not None else None
 
 
 def _error_text(message) -> str:
@@ -166,10 +159,9 @@ class Streamer:
             # in the sink), so this queue must hold more than that or it drops.
             "t. ! queue max-size-buffers=8 leaky=downstream ! videoscale ! videoconvert "
             f"! video/x-raw,format=RGBx,width={self.preview_width},pixel-aspect-ratio=1/1 "
-            "! appsink name=preview emit-signals=true max-buffers=1 drop=true sync=true"
+            "! appsink name=preview max-buffers=1 drop=true sync=true"
         )
         self.pipeline = Gst.parse_launch(description)
-        _attach_appsink(self.pipeline, "preview", self.on_frame)
         self.pipeline.set_state(Gst.State.PAUSED)
         change, _, _ = self.pipeline.get_state(10 * SECOND)
         if change == Gst.StateChangeReturn.FAILURE:
@@ -272,9 +264,13 @@ class Streamer:
     # --- events ---------------------------------------------------------------
 
     def poll(self) -> None:
-        """Handle bus messages; call regularly (the GUI uses a 50 ms timer)."""
+        """Deliver the newest preview frame and handle bus messages. Call it
+        more often than the frame rate (the GUI uses a 15 ms timer)."""
         if self.pipeline is None:
             return
+        frame = _pull_frame(self.pipeline, "preview")
+        if frame is not None and self.on_frame is not None:
+            self.on_frame(frame)
         bus = self.pipeline.get_bus()
         while (message := bus.pop()) is not None:
             if message.type == Gst.MessageType.SEGMENT_DONE:
@@ -374,7 +370,6 @@ class RtpReceiver:
         self.pipeline = None
         self.frames = 0
         self.error = ""
-        self._lock = threading.Lock()
 
     def start(self) -> None:
         self.stop()
@@ -386,17 +381,9 @@ class RtpReceiver:
             "! rtpjitterbuffer latency=50 drop-on-latency=true ! rtph264depay ! h264parse "
             f"! {decoder} ! videoconvert ! videoscale "
             f"! video/x-raw,format=RGBx,width=[1,{self.max_width}],pixel-aspect-ratio=1/1 "
-            "! appsink name=sink emit-signals=true max-buffers=1 drop=true sync=false"
+            "! appsink name=sink max-buffers=1 drop=true sync=false"
         )
         self.pipeline = Gst.parse_launch(description)
-
-        def counted(frame: Frame) -> None:
-            with self._lock:
-                self.frames += 1
-            if self.on_frame:
-                self.on_frame(frame)
-
-        _attach_appsink(self.pipeline, "sink", counted)
         self.error = ""
         self.pipeline.set_state(Gst.State.PLAYING)
 
@@ -410,8 +397,14 @@ class RtpReceiver:
         return self.pipeline is not None
 
     def poll(self) -> None:
+        """Deliver the newest frame and handle errors; call it from a timer."""
         if self.pipeline is None:
             return
+        frame = _pull_frame(self.pipeline, "sink")
+        if frame is not None:
+            self.frames += 1
+            if self.on_frame is not None:
+                self.on_frame(frame)
         bus = self.pipeline.get_bus()
         while (message := bus.pop()) is not None:
             if message.type == Gst.MessageType.ERROR:

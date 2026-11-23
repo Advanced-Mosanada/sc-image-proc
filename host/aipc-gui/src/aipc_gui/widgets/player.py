@@ -23,7 +23,7 @@ from .. import media
 
 SPEEDS = [0.25, 0.5, 1.0, 1.5, 2.0, 4.0]
 SKIP_SECONDS = 5.0
-POLL_MS = 50
+POLL_MS = 15  # delivers the preview frames too: faster than 60 fps
 VIDEO_FILTER = "Videos (*.mp4 *.mkv *.mov *.avi *.webm *.ts *.h264);;All files (*)"
 
 
