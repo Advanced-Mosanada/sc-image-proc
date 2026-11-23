@@ -21,11 +21,6 @@ bool available()
     return false;
 }
 
-bool hasElement(const char* /*name*/)
-{
-    return false;
-}
-
 FrameSourcePtr openVideoFile(const std::string& path, const SourceOptions& /*options*/)
 {
     unavailable("video file '" + path + "'");

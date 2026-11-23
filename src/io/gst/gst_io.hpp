@@ -10,8 +10,8 @@
 
 namespace scip::io::gst {
 
+/// False in builds without GStreamer (no_gstreamer.cpp).
 bool available();
-bool hasElement(const char* name);
 
 FrameSourcePtr openVideoFile(const std::string& path, const SourceOptions& options);
 FrameSourcePtr

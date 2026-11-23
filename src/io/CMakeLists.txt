@@ -14,9 +14,8 @@ target_link_libraries(scip_io
 if(SCIP_WITH_GSTREAMER)
     target_sources(scip_io PRIVATE
         gst/gst_sink.cpp
-        gst/gst_source.cpp
-        gst/gst_util.cpp)
-    target_link_libraries(scip_io PRIVATE PkgConfig::GST)
+        gst/gst_source.cpp)
+    target_link_libraries(scip_io PRIVATE scip_gst)
 else()
     target_sources(scip_io PRIVATE gst/no_gstreamer.cpp)
 endif()

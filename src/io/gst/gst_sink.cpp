@@ -29,6 +29,8 @@
 
 namespace scip::io::gst {
 
+using namespace ::scip::gst;  // shared helpers: launch, Ptr, hasElement...
+
 namespace {
 
 using std::chrono::milliseconds;

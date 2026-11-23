@@ -1,6 +1,7 @@
 #pragma once
 
 // Thin C++ helpers over the GStreamer C API: RAII, error reporting, formats.
+// Internal to scip (library scip_gst), shared by the I/O code and the GStreamer stages.
 //
 // Note: GStreamer's casting macros (GST_BIN(), G_OBJECT(), GST_SECOND...) expand to
 // C-style casts, which our -Wold-style-cast forbids. This code uses the functions
@@ -17,7 +18,7 @@
 #include <optional>
 #include <string>
 
-namespace scip::io::gst {
+namespace scip::gst {
 
 /// unique_ptr deleter for anything derived from GstObject (elements, buses, pads).
 struct ObjectUnref {
@@ -42,6 +43,9 @@ inline GstClockTime toClockTime(std::chrono::nanoseconds duration)
 /// gst_init() exactly once per process.
 void ensureInit();
 
+/// True if an element factory of this name is installed.
+bool hasElement(const char* name);
+
 /// Build a pipeline from gst-launch syntax. Throws with GStreamer's message on failure.
 Ptr<GstElement> launch(const std::string& description);
 
@@ -61,4 +65,4 @@ void waitForEos(GstElement* pipeline, const std::string& what, std::chrono::nano
 std::optional<PixelFormat> fromGstFormat(GstVideoFormat format);
 GstVideoFormat toGstFormat(PixelFormat format);
 
-}  // namespace scip::io::gst
+}  // namespace scip::gst

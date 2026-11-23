@@ -1,11 +1,9 @@
 #include "gst_util.hpp"
 
-#include "gst_io.hpp"
-
 #include <mutex>
 #include <stdexcept>
 
-namespace scip::io::gst {
+namespace scip::gst {
 
 namespace {
 
@@ -40,11 +38,6 @@ void ensureInit()
 {
     static std::once_flag once;
     std::call_once(once, [] { gst_init(nullptr, nullptr); });
-}
-
-bool available()
-{
-    return true;
 }
 
 bool hasElement(const char* name)
@@ -144,4 +137,4 @@ GstVideoFormat toGstFormat(PixelFormat format)
     return GST_VIDEO_FORMAT_UNKNOWN;
 }
 
-}  // namespace scip::io::gst
+}  // namespace scip::gst

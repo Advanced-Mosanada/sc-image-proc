@@ -29,6 +29,8 @@
 
 namespace scip::io::gst {
 
+using namespace ::scip::gst;  // shared helpers: launch, Ptr, hasElement...
+
 namespace {
 
 using std::chrono::milliseconds;
@@ -305,6 +307,11 @@ openCamera(const std::string& device, int width, int height, const SourceOptions
 FrameSourcePtr openLaunch(const std::string& description, const SourceOptions& options)
 {
     return std::make_unique<GstSource>(description, options.maxFrames, "gst source");
+}
+
+bool available()
+{
+    return true;
 }
 
 }  // namespace scip::io::gst
