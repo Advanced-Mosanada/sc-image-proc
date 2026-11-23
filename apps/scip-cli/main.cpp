@@ -74,6 +74,7 @@ void printUsage()
                 "      --realtime        play video files at their own frame rate\n"
                 "      --gray-input      decode video/camera straight to gray8\n"
                 "      --list-stages     show available functions and their parameters\n"
+                "      --list-devices    show cameras and display connectors\n"
                 "      --version         show build information\n"
                 "  -h, --help\n");
 }
@@ -87,6 +88,32 @@ void printVersion()
                 scip::build::kBuildType,
                 scip::build::kCompiler,
                 scip::io::hasGStreamer() ? ", GStreamer" : "");
+}
+
+void printDevices()
+{
+    std::printf("cameras (input camera:PATH):\n");
+    for (const auto& device : scip::io::listVideoDevices()) {
+        std::printf("  %-14s %s (%s, %s)\n",
+                    device.path.c_str(),
+                    device.name.c_str(),
+                    device.driver.c_str(),
+                    device.bus.c_str());
+    }
+    std::printf("displays (output display:ID)%s:\n",
+                scip::io::hasWindowSystem()
+                    ? ", a window system is running: 'display' opens a window"
+                    : "");
+    for (const auto& display : scip::io::listDisplays()) {
+        std::printf("  %3d  %-10s %s",
+                    display.connectorId,
+                    display.name.c_str(),
+                    display.connected ? "connected" : "-");
+        if (display.width > 0) {
+            std::printf("  %dx%d@%d", display.width, display.height, display.refreshHz);
+        }
+        std::printf("  (%s)\n", display.card.c_str());
+    }
 }
 
 std::uint64_t parseCount(const std::string& text, const char* option)
@@ -131,6 +158,9 @@ bool parseArgs(int argc, char** argv, Options& options)
             options.loop = true;
         } else if (arg == "--list-stages") {
             std::printf("%s", scip::StageRegistry::instance().help().c_str());
+            return false;
+        } else if (arg == "--list-devices") {
+            printDevices();
             return false;
         } else if (arg == "--version") {
             printVersion();

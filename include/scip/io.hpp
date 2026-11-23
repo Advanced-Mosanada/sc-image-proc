@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 /// Frame input / output.
 namespace scip::io {
@@ -64,5 +65,34 @@ std::string viewerHint(const std::string& sinkUri);
 
 /// True when the build includes GStreamer (video files, camera, display, udp).
 bool hasGStreamer();
+
+/// A V4L2 device that can capture video (open it as "camera:" + path).
+struct VideoDevice {
+    std::string path;    ///< /dev/video0
+    std::string name;    ///< "HD Pro Webcam C920"
+    std::string driver;  ///< "uvcvideo"
+    std::string bus;     ///< "usb-xhci-hcd.1.auto-1"
+};
+
+/// Cameras on this machine. Codec and metadata nodes are left out.
+std::vector<VideoDevice> listVideoDevices();
+
+/// A display connector (DRM/KMS). Use it as output "display:" + connectorId.
+struct DisplayOutput {
+    std::string card;     ///< /dev/dri/card1
+    int connectorId = 0;  ///< for display:ID (kmssink connector-id)
+    std::string name;     ///< "HDMI-A-1", "LVDS-1"
+    bool connected = false;
+    int width = 0;  ///< current (or preferred) mode, 0 if none
+    int height = 0;
+    int refreshHz = 0;
+};
+
+/// Display connectors; empty when built without libdrm.
+std::vector<DisplayOutput> listDisplays();
+
+/// True when a window system (X11 / Wayland) is available: "display" then
+/// opens a window instead of drawing on a connector.
+bool hasWindowSystem();
 
 }  // namespace scip::io

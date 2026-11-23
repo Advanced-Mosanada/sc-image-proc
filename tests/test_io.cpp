@@ -84,3 +84,18 @@ TEST(ImageFile, PngRoundTripIsLossless)
     ASSERT_EQ(loaded.info(), original.info());
     EXPECT_EQ(cv::norm(scip::asMat(loaded), scip::asMat(original), cv::NORM_INF), 0.0);
 }
+
+TEST(Devices, ListingIsSane)
+{
+    for (const auto& device : scip::io::listVideoDevices()) {
+        EXPECT_EQ(device.path.rfind("/dev/video", 0), 0u) << device.path;
+        EXPECT_FALSE(device.name.empty()) << device.path;
+    }
+    for (const auto& display : scip::io::listDisplays()) {
+        EXPECT_GT(display.connectorId, 0) << display.name;
+        EXPECT_FALSE(display.name.empty());
+        if (!display.connected) {
+            EXPECT_EQ(display.width, 0) << display.name;
+        }
+    }
+}
