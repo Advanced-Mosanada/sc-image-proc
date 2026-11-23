@@ -64,9 +64,10 @@ gmon.out
 *.profdata
 bench-results*/
 
-# Core dumps
-core
-core.*
+# Core dumps. Anchored to the repo root: a bare `core` would also match the
+# src/core/ source folder. Dumps inside build/ are ignored with build/.
+/core
+/core.[0-9]*
 vgcore.*
 
 # ---------------------------------------------------------------------------
