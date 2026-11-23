@@ -11,6 +11,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(scip_tests
     test_frame.cpp
+    test_gst.cpp
     test_io.cpp
     test_pipeline.cpp
     test_stages.cpp

@@ -1,14 +1,24 @@
-# scip_io: frame sources and sinks, opened from URIs (io::openSource / io::openSink).
-# Video, camera, display and network I/O need GStreamer; until that backend is
-# built in, gst/no_gstreamer.cpp provides stand-ins that report it is missing.
+# scip_io: frame sources and sinks.
+#   always      : image files, test patterns
+#   GStreamer   : video files, cameras, display, H.264 recording / UDP streaming
 add_library(scip_io STATIC
     image_file.cpp
     sinks.cpp
-    sources.cpp
-    gst/no_gstreamer.cpp)
+    sources.cpp)
 add_library(scip::io ALIAS scip_io)
 
 target_link_libraries(scip_io
     PUBLIC scip_core
     PRIVATE scip_cvinterop opencv_imgcodecs opencv_imgproc)
+
+if(SCIP_WITH_GSTREAMER)
+    target_sources(scip_io PRIVATE
+        gst/gst_sink.cpp
+        gst/gst_source.cpp
+        gst/gst_util.cpp)
+    target_link_libraries(scip_io PRIVATE PkgConfig::GST)
+else()
+    target_sources(scip_io PRIVATE gst/no_gstreamer.cpp)
+endif()
+
 scip_set_warnings(scip_io)

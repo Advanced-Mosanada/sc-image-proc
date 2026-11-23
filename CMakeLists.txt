@@ -24,6 +24,7 @@ endif()
 option(SCIP_BUILD_TESTS "Build the unit tests" ON)
 option(SCIP_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(SCIP_ENABLE_SANITIZERS "Build with AddressSanitizer + UBSan (host only)" OFF)
+option(SCIP_WITH_GSTREAMER "Video files, camera, display and streaming via GStreamer" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
@@ -38,6 +39,15 @@ include(GNUInstallDirs)
 # here and building the imx8mp preset regularly keeps us on the common API.
 find_package(OpenCV 4.4 REQUIRED COMPONENTS core imgproc imgcodecs)
 message(STATUS "OpenCV ${OpenCV_VERSION} from ${OpenCV_DIR}")
+
+# GStreamer 1.18 is what the board image has. On Ubuntu:
+#   sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+if(SCIP_WITH_GSTREAMER)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GST REQUIRED IMPORTED_TARGET
+        gstreamer-1.0>=1.18 gstreamer-app-1.0 gstreamer-video-1.0)
+    message(STATUS "GStreamer ${GST_gstreamer-1.0_VERSION}")
+endif()
 
 # ---------------------------------------------------------------------------
 # Targets
