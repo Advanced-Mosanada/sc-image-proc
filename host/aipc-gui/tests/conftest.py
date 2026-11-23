@@ -6,6 +6,7 @@ import os
 import re
 import socket
 import subprocess
+import tempfile
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from pathlib import Path
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # tests never open windows
+# Settings (theme, last target, layout) go to a throw-away folder, not the user's.
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="aipc-gui-test-")
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -41,6 +44,16 @@ class Scipd:
     port: int
     discovery_port: int
     process: subprocess.Popen
+
+
+@pytest.fixture(autouse=True)
+def themed(request):
+    """The GUI tests run with the theme installed, like the application."""
+    if "qtbot" in request.fixturenames:
+        from aipc_gui import theme
+
+        theme.install(request.getfixturevalue("qapp"), "dark")
+    yield
 
 
 @pytest.fixture
