@@ -1,28 +1,33 @@
 #include "scip/cv.hpp"
-#include "scip/stages.hpp"
+#include "scip/registry.hpp"
 
 #include <opencv2/imgproc.hpp>
 
 #include <memory>
-#include <stdexcept>
 
 namespace scip::stages {
 
 namespace {
 
+int toCvInterpolation(const std::string& name)
+{
+    if (name == "nearest") {
+        return cv::INTER_NEAREST;
+    }
+    if (name == "cubic") {
+        return cv::INTER_CUBIC;
+    }
+    if (name == "area") {
+        return cv::INTER_AREA;
+    }
+    return cv::INTER_LINEAR;
+}
+
 class Resize final : public Stage {
 public:
-    Resize(int width, int height) : width_(width), height_(height)
-    {
-        if (width <= 0 || height <= 0) {
-            throw std::invalid_argument("resize target must be positive");
-        }
-    }
-
-    std::string name() const override
-    {
-        return "resize:" + std::to_string(width_) + "x" + std::to_string(height_);
-    }
+    Resize(int width, int height, int interpolation)
+        : width_(width), height_(height), interpolation_(interpolation)
+    {}
 
     FrameInfo configure(const FrameInfo& input) override
     {
@@ -32,19 +37,38 @@ public:
     void process(const Frame& in, Frame& out) override
     {
         cv::Mat dst = asMat(out);
-        cv::resize(asMat(in), dst, dst.size(), 0.0, 0.0, cv::INTER_LINEAR);
+        cv::resize(asMat(in), dst, dst.size(), 0.0, 0.0, interpolation_);
     }
 
 private:
     int width_;
     int height_;
+    int interpolation_;
 };
 
-}  // namespace
-
-StagePtr makeResize(int width, int height)
+StageInfo makeInfo()
 {
-    return std::make_unique<Resize>(width, height);
+    StageInfo info;
+    info.name = "resize";
+    info.title = "Resize";
+    info.description = "Scales the image to a fixed size (OpenCV)";
+    info.category = "geometry";
+    info.params = {
+        param::integer("width", "Output width", 640, 16, 7680, 0, "px"),
+        param::integer("height", "Output height", 480, 16, 4320, 0, "px"),
+        param::choice(
+            "interpolation", "Resampling method", "linear", {"nearest", "linear", "cubic", "area"}),
+    };
+    info.create = [](const ParamMap& p) {
+        return std::make_unique<Resize>(static_cast<int>(getInt(p, "width")),
+                                        static_cast<int>(getInt(p, "height")),
+                                        toCvInterpolation(getString(p, "interpolation")));
+    };
+    return info;
 }
+
+SCIP_REGISTER_STAGE(makeInfo());
+
+}  // namespace
 
 }  // namespace scip::stages

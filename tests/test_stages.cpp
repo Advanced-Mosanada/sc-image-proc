@@ -3,7 +3,7 @@
 
 #include "scip/cv.hpp"
 #include "scip/io.hpp"
-#include "scip/stages.hpp"
+#include "scip/registry.hpp"
 
 #include <gtest/gtest.h>
 #include <opencv2/imgproc.hpp>
@@ -15,6 +15,14 @@ using scip::FrameInfo;
 using scip::PixelFormat;
 
 namespace {
+
+/// Create one stage from pipeline text, through the registry like every app does.
+scip::StagePtr make(const std::string& text)
+{
+    auto stages = scip::StageRegistry::instance().createChain(text);
+    EXPECT_EQ(stages.size(), 1u);
+    return std::move(stages.front());
+}
 
 /// Run a single stage the way the pipeline does: configure, allocate, process.
 Frame runStage(scip::Stage& stage, const Frame& input)
@@ -44,7 +52,7 @@ TEST(ToGray, MatchesOpenCvWithinOneLevel)
 {
     // Odd width on purpose: catches loops that assume multiples of 8 or 16.
     const Frame input = randomFrame(FrameInfo{333, 77, PixelFormat::Bgr8});
-    auto stage = scip::stages::makeToGray();
+    auto stage = make("gray");
     const Frame ours = runStage(*stage, input);
 
     cv::Mat reference;
@@ -62,7 +70,7 @@ TEST(ToGray, GrayPixelsStayExact)
             input.row(0)[x * 3 + c] = static_cast<std::uint8_t>(x);
         }
     }
-    auto stage = scip::stages::makeToGray();
+    auto stage = make("gray");
     const Frame ours = runStage(*stage, input);
     for (int x = 0; x < 256; ++x) {
         ASSERT_EQ(ours.row(0)[x], x) << "at x=" << x;
@@ -72,14 +80,14 @@ TEST(ToGray, GrayPixelsStayExact)
 TEST(ToGray, GrayInputIsCopied)
 {
     const Frame input = randomFrame(FrameInfo{50, 20, PixelFormat::Gray8});
-    auto stage = scip::stages::makeToGray();
+    auto stage = make("gray");
     EXPECT_EQ(maxAbsDiff(runStage(*stage, input), input), 0.0);
 }
 
 TEST(GaussianBlur, MatchesOpenCv)
 {
     const Frame input = scip::io::makeTestPattern(FrameInfo{160, 90, PixelFormat::Bgr8});
-    auto stage = scip::stages::makeGaussianBlur(5);
+    auto stage = make("blur ksize=5");
     const Frame ours = runStage(*stage, input);
 
     cv::Mat reference;
@@ -89,36 +97,36 @@ TEST(GaussianBlur, MatchesOpenCv)
 
 TEST(GaussianBlur, RejectsEvenKernel)
 {
-    EXPECT_THROW(scip::stages::makeGaussianBlur(4), std::invalid_argument);
-    EXPECT_THROW(scip::stages::makeGaussianBlur(1), std::invalid_argument);
+    EXPECT_THROW(make("blur ksize=4"), std::invalid_argument);
+    EXPECT_THROW(make("blur ksize=1"), std::invalid_argument);
 }
 
 TEST(Resize, ProducesRequestedSize)
 {
     const Frame input = scip::io::makeTestPattern(FrameInfo{64, 48, PixelFormat::Bgr8});
-    auto stage = scip::stages::makeResize(32, 24);
+    auto stage = make("resize width=32 height=24");
     const Frame ours = runStage(*stage, input);
     EXPECT_EQ(ours.info(), (FrameInfo{32, 24, PixelFormat::Bgr8}));
 }
 
-TEST(Factory, CreatesStagesFromSpecs)
+TEST(BuiltinStages, AreRegisteredWithDescriptions)
 {
-    EXPECT_EQ(scip::stages::create("gray")->name(), "gray");
-    EXPECT_EQ(scip::stages::create(" blur:7 ")->name(), "blur:7");
-    EXPECT_EQ(scip::stages::create("blur:7:1.5")->name(), "blur:7:1.5");
-    EXPECT_EQ(scip::stages::create("resize:640x480")->name(), "resize:640x480");
-
-    const auto chain = scip::stages::createChain("resize:320x240, gray ,blur:3");
-    ASSERT_EQ(chain.size(), 3u);
-    EXPECT_EQ(chain[1]->name(), "gray");
+    const auto& registry = scip::StageRegistry::instance();
+    for (const char* name : {"gray", "blur", "resize"}) {
+        ASSERT_TRUE(registry.contains(name)) << name;
+        const scip::StageInfo info = registry.info(name);
+        EXPECT_FALSE(info.title.empty()) << name;
+        EXPECT_FALSE(info.description.empty()) << name;
+        EXPECT_EQ(info.backend, "native") << name;
+    }
 }
 
-TEST(Factory, RejectsBadSpecs)
+TEST(BuiltinStages, ChainFromText)
 {
-    EXPECT_THROW(scip::stages::create("nope"), std::invalid_argument);
-    EXPECT_THROW(scip::stages::create("gray:1"), std::invalid_argument);
-    EXPECT_THROW(scip::stages::create("blur"), std::invalid_argument);
-    EXPECT_THROW(scip::stages::create("blur:abc"), std::invalid_argument);
-    EXPECT_THROW(scip::stages::create("resize:640"), std::invalid_argument);
-    EXPECT_THROW(scip::stages::createChain("gray,,blur:3"), std::invalid_argument);
+    const auto chain = scip::StageRegistry::instance().createChain(
+        "resize width=320 height=240 ! gray ! blur ksize=3 sigma=0.8");
+    ASSERT_EQ(chain.size(), 3u);
+    EXPECT_EQ(chain[0]->name(), "resize height=240 width=320");
+    EXPECT_EQ(chain[1]->name(), "gray");
+    EXPECT_EQ(chain[2]->name(), "blur ksize=3 sigma=0.8");
 }

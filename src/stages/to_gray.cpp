@@ -1,4 +1,4 @@
-#include "scip/stages.hpp"
+#include "scip/registry.hpp"
 
 #include <cstring>
 #include <memory>
@@ -12,8 +12,6 @@ namespace {
 /// against this one, so it favours clarity over speed.
 class ToGray final : public Stage {
 public:
-    std::string name() const override { return "gray"; }
-
     FrameInfo configure(const FrameInfo& input) override
     {
         if (input.format != PixelFormat::Bgr8 && input.format != PixelFormat::Gray8) {
@@ -51,11 +49,19 @@ public:
     }
 };
 
-}  // namespace
-
-StagePtr makeToGray()
+StageInfo makeInfo()
 {
-    return std::make_unique<ToGray>();
+    StageInfo info;
+    info.name = "gray";
+    info.title = "Grayscale";
+    info.description = "BGR to gray (BT.601 luma); hand-written C++ reference implementation";
+    info.category = "color";
+    info.create = [](const ParamMap&) { return std::make_unique<ToGray>(); };
+    return info;
 }
+
+SCIP_REGISTER_STAGE(makeInfo());
+
+}  // namespace
 
 }  // namespace scip::stages

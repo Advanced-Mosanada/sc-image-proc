@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 namespace scip {
 
@@ -214,6 +215,84 @@ ParamMap resolveParams(const std::vector<ParamSpec>& specs, const ParamMap& give
     }
     return result;
 }
+
+namespace param {
+
+ParamSpec boolean(std::string name, std::string description, bool defaultValue)
+{
+    ParamSpec spec;
+    spec.name = std::move(name);
+    spec.type = ParamType::Bool;
+    spec.description = std::move(description);
+    spec.defaultValue = defaultValue;
+    return spec;
+}
+
+ParamSpec integer(std::string name,
+                  std::string description,
+                  std::int64_t defaultValue,
+                  std::int64_t min,
+                  std::int64_t max,
+                  std::int64_t step,
+                  std::string unit)
+{
+    ParamSpec spec;
+    spec.name = std::move(name);
+    spec.type = ParamType::Int;
+    spec.description = std::move(description);
+    spec.defaultValue = defaultValue;
+    spec.min = static_cast<double>(min);
+    spec.max = static_cast<double>(max);
+    spec.step = static_cast<double>(step);
+    spec.unit = std::move(unit);
+    return spec;
+}
+
+ParamSpec number(std::string name,
+                 std::string description,
+                 double defaultValue,
+                 double min,
+                 double max,
+                 double step,
+                 std::string unit)
+{
+    ParamSpec spec;
+    spec.name = std::move(name);
+    spec.type = ParamType::Float;
+    spec.description = std::move(description);
+    spec.defaultValue = defaultValue;
+    spec.min = min;
+    spec.max = max;
+    spec.step = step;
+    spec.unit = std::move(unit);
+    return spec;
+}
+
+ParamSpec choice(std::string name,
+                 std::string description,
+                 std::string defaultValue,
+                 std::vector<std::string> choices)
+{
+    ParamSpec spec;
+    spec.name = std::move(name);
+    spec.type = ParamType::Enum;
+    spec.description = std::move(description);
+    spec.defaultValue = std::move(defaultValue);
+    spec.choices = std::move(choices);
+    return spec;
+}
+
+ParamSpec text(std::string name, std::string description, std::string defaultValue)
+{
+    ParamSpec spec;
+    spec.name = std::move(name);
+    spec.type = ParamType::String;
+    spec.description = std::move(description);
+    spec.defaultValue = std::move(defaultValue);
+    return spec;
+}
+
+}  // namespace param
 
 bool getBool(const ParamMap& params, const std::string& name)
 {

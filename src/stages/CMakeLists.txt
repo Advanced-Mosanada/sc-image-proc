@@ -1,6 +1,12 @@
-# scip_stages: the built-in processing stages and the text factory.
-add_library(scip_stages STATIC
-    factory.cpp
+# scip_stages: the built-in processing functions.
+#
+# Each .cpp registers its function with SCIP_REGISTER_STAGE. This is an OBJECT
+# library on purpose: its object files are linked into every executable that
+# lists it, so the registrations are kept. (From a static library the linker
+# would drop them, because nothing references them by name.)
+#
+# To add a function: create a .cpp here (see README.md) and list it below.
+add_library(scip_stages OBJECT
     gaussian_blur.cpp
     resize.cpp
     to_gray.cpp)

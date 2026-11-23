@@ -60,6 +60,31 @@ std::string formatValue(const ParamValue& value);
 /// values throw std::invalid_argument.
 ParamMap resolveParams(const std::vector<ParamSpec>& specs, const ParamMap& given);
 
+/// Builders that keep stage declarations short:
+///   param::integer("ksize", "Kernel size", 5, 3, 31, 2, "px")
+namespace param {
+ParamSpec boolean(std::string name, std::string description, bool defaultValue);
+ParamSpec integer(std::string name,
+                  std::string description,
+                  std::int64_t defaultValue,
+                  std::int64_t min,
+                  std::int64_t max,
+                  std::int64_t step = 0,
+                  std::string unit = {});
+ParamSpec number(std::string name,
+                 std::string description,
+                 double defaultValue,
+                 double min,
+                 double max,
+                 double step = 0.0,
+                 std::string unit = {});
+ParamSpec choice(std::string name,
+                 std::string description,
+                 std::string defaultValue,
+                 std::vector<std::string> choices);
+ParamSpec text(std::string name, std::string description, std::string defaultValue);
+}  // namespace param
+
 // Typed access to resolved parameters. Throw std::out_of_range if missing.
 bool getBool(const ParamMap& params, const std::string& name);
 std::int64_t getInt(const ParamMap& params, const std::string& name);

@@ -14,7 +14,8 @@ include/scip/        public headers
   pipeline.hpp         Pipeline: runs stages in order, records per-stage latency
   source.hpp           FrameSource: interface for inputs (files, patterns, video, camera)
   sink.hpp             FrameSink: interface for outputs (display, video file, network)
-  stages.hpp           built-in stages + text factory ("gray,blur:5")
+  params.hpp           ParamSpec: self-describing function parameters
+  registry.hpp         StageRegistry: all functions, pipeline text ("gray ! blur ksize=5")
   io.hpp               openSource() / openSink() from URIs, image files, test patterns
   cv.hpp               zero-copy Frame <-> cv::Mat views
 src/
@@ -79,7 +80,7 @@ versions, and the cross-build is what catches API differences.
 ```bash
 scripts/deploy.sh                       # build imx8mp-release, copy to /opt/scip on the board
 scripts/board-test.sh                   # unit tests on the board
-scripts/board-run.sh scip-cli -i pattern:1920x1080 -p gray,blur:5 -n 200
+scripts/board-run.sh scip-cli -i pattern:1920x1080 -p 'gray ! blur ksize=5' -n 200
 ```
 
 Board address and folder: `SCIP_BOARD` (default `root@192.168.50.2`) and
@@ -113,7 +114,8 @@ scip-cli -i <input> [-p <stages>] [-o <output>]... [-n frames] [--realtime] [--g
 scip-cli --help | --list-stages | --version
 ```
 
-Stages: `gray`, `blur:K[:SIGMA]`, `resize:WxH`, chained with commas; `none` = pass-through.
+Pipelines are written like GStreamer launch lines: `gray ! blur ksize=5 ! resize width=640 height=480`;
+`none` = pass-through. `scip-cli --list-stages` lists every function with its parameters.
 
 | Input `-i` | |
 |---|---|
@@ -141,16 +143,16 @@ to gray, which is the cheapest path when the first stage would be `gray` anyway.
 On the PC:
 
 ```bash
-build/host-release/apps/scip-cli -i ~/videos/clip.mp4 -p gray,blur:5 -o display --realtime
+build/host-release/apps/scip-cli -i ~/videos/clip.mp4 -p 'gray ! blur ksize=5' -o display --realtime
 ```
 
 On the board, shown on its screen, recorded, or streamed to the PC:
 
 ```bash
 scripts/board-copy.sh ~/videos/clip.mp4          # -> /home/root/videos/ on the board
-scripts/board-run.sh scip-cli -i /home/root/videos/clip.mp4 -p gray,blur:5 -o display:40 --realtime
-scripts/board-run.sh scip-cli -i /home/root/videos/clip.mp4 -p gray,blur:5 -o /tmp/out.mp4
-scripts/board-run.sh scip-cli -i /home/root/videos/clip.mp4 -p gray,blur:5 -o udp:192.168.50.1:5000 --realtime
+scripts/board-run.sh scip-cli -i /home/root/videos/clip.mp4 -p 'gray ! blur ksize=5' -o display:40 --realtime
+scripts/board-run.sh scip-cli -i /home/root/videos/clip.mp4 -p 'gray ! blur ksize=5' -o /tmp/out.mp4
+scripts/board-run.sh scip-cli -i /home/root/videos/clip.mp4 -p 'gray ! blur ksize=5' -o udp:192.168.50.1:5000 --realtime
 ```
 
 For the UDP stream, start the viewer on the PC first (scip-cli prints this command):

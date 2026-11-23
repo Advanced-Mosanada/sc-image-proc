@@ -1,14 +1,14 @@
 // scip-cli: feed frames from a source through a pipeline into zero or more outputs,
 // and report where the time goes.
 //
-//   scip-cli -i pattern:1920x1080 -p gray,blur:5 -n 200
-//   scip-cli -i video.mp4 -p gray,blur:5 -o display --realtime
+//   scip-cli -i pattern:1920x1080 -p 'gray ! blur ksize=5' -n 200
+//   scip-cli -i video.mp4 -p 'gray ! blur ksize=5' -o display --realtime
 //   scip-cli -i video.mp4 -p gray -o out.mp4 -o udp:192.168.50.1:5000
 
 #include "scip/build_info.hpp"
 #include "scip/io.hpp"
 #include "scip/pipeline.hpp"
-#include "scip/stages.hpp"
+#include "scip/registry.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -64,13 +64,14 @@ void printUsage()
                 "  gst:'appsrc name=scip_src ! ...'     any GStreamer pipeline\n"
                 "\n"
                 "Options:\n"
-                "  -p, --pipeline SPEC   comma-separated stages, or 'none'  (default gray)\n"
+                "  -p, --pipeline TEXT   stages joined with '!', e.g. 'gray ! blur ksize=5';\n"
+                "                        'none' = pass-through (default gray)\n"
                 "  -n, --frames N        measured frames; 0 = until the input ends / Ctrl+C\n"
                 "                        (default: 100 for still images, 0 for videos)\n"
                 "  -w, --warmup N        untimed frames before measuring    (default 5)\n"
                 "      --realtime        play video files at their own frame rate\n"
                 "      --gray-input      decode video/camera straight to gray8\n"
-                "      --list-stages     show available stages\n"
+                "      --list-stages     show available functions and their parameters\n"
                 "      --version         show build information\n"
                 "  -h, --help\n");
 }
@@ -125,7 +126,7 @@ bool parseArgs(int argc, char** argv, Options& options)
         } else if (arg == "--gray-input") {
             options.grayInput = true;
         } else if (arg == "--list-stages") {
-            std::printf("%s", scip::stages::help().c_str());
+            std::printf("%s", scip::StageRegistry::instance().help().c_str());
             return false;
         } else if (arg == "--version") {
             printVersion();
@@ -219,7 +220,8 @@ int run(const Options& options)
 
     scip::Pipeline pipeline;
     if (!options.pipeline.empty() && options.pipeline != "none") {
-        for (scip::StagePtr& stage : scip::stages::createChain(options.pipeline)) {
+        for (scip::StagePtr& stage :
+             scip::StageRegistry::instance().createChain(options.pipeline)) {
             pipeline.add(std::move(stage));
         }
     }

@@ -40,8 +40,8 @@ Re-check after re-flashing or rebuilding the image.
 
 | Pipeline, 1920x1080 BGR input | mean | throughput |
 |---|---|---|
-| `gray,blur:5` | 7.6 ms (gray 2.9, blur 4.7) | 131 fps |
-| `resize:640x360,gray,blur:5` | 4.7 ms (resize 3.7) | 214 fps |
+| `gray ! blur ksize=5` | 7.6 ms (gray 2.9, blur 4.7) | 131 fps |
+| `resize width=640 height=360 ! gray ! blur ksize=5` | 4.7 ms (resize 3.7) | 214 fps |
 
 ## Video path on the board (measured, 640x512 H.264, 2183 frames)
 
@@ -53,7 +53,7 @@ Re-check after re-flashing or rebuilding the image.
 | + `imxvideoconvert_g2d` -> BGRx (2D GPU) | +2 ms, then BGRx->BGR with OpenCV/NEON |
 | gray from the NV12 Y plane (`--gray-input`) | 0 ms (zero-copy) |
 
-Result for `gray,blur:5` on that video: 45 fps -> 274 fps (BGR input),
+Result for `gray ! blur ksize=5` on that video: 45 fps -> 274 fps (BGR input),
 65 fps -> 441 fps (`--gray-input`).
 
 ## Board quirks found (BSP L5.10.9)

@@ -29,7 +29,7 @@ gtest_discover_tests(scip_tests DISCOVERY_MODE PRE_TEST)
 
 # End-to-end smoke test of the command-line tool.
 add_test(NAME cli.pattern_gray_blur
-         COMMAND scip-cli -i pattern:320x240 -p gray,blur:5,resize:160x120 -n 5 -w 1)
+         COMMAND scip-cli -i pattern:320x240 -p "gray ! blur ksize=5 ! resize width=160 height=120" -n 5 -w 1)
 add_test(NAME cli.rejects_unknown_stage COMMAND scip-cli -p does-not-exist)
 set_tests_properties(cli.rejects_unknown_stage PROPERTIES WILL_FAIL TRUE)
 

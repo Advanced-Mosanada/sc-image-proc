@@ -1,5 +1,5 @@
 #include "scip/pipeline.hpp"
-#include "scip/stages.hpp"
+#include "scip/registry.hpp"
 
 #include <gtest/gtest.h>
 
@@ -77,8 +77,9 @@ TEST(Pipeline, ConfigureReportsWhichStageFailed)
 TEST(Pipeline, ChainsStagesAndPropagatesFormat)
 {
     Pipeline pipeline;
-    pipeline.add(scip::stages::makeResize(32, 16));
-    pipeline.add(scip::stages::makeToGray());
+    pipeline.add(scip::StageRegistry::instance().create(
+        {"resize", {{"width", std::int64_t{32}}, {"height", std::int64_t{16}}}}));
+    pipeline.add(scip::StageRegistry::instance().create({"gray", {}}));
     pipeline.add(std::make_unique<Invert>());
     pipeline.configure(FrameInfo{64, 64, PixelFormat::Bgr8});
 

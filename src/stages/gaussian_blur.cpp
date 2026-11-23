@@ -1,11 +1,9 @@
 #include "scip/cv.hpp"
-#include "scip/stages.hpp"
+#include "scip/registry.hpp"
 
 #include <opencv2/imgproc.hpp>
 
 #include <memory>
-#include <sstream>
-#include <stdexcept>
 
 namespace scip::stages {
 
@@ -13,26 +11,7 @@ namespace {
 
 class GaussianBlur final : public Stage {
 public:
-    GaussianBlur(int kernelSize, double sigma) : kernelSize_(kernelSize), sigma_(sigma)
-    {
-        if (kernelSize < 3 || kernelSize % 2 == 0) {
-            throw std::invalid_argument("blur kernel size must be odd and >= 3, got " +
-                                        std::to_string(kernelSize));
-        }
-        if (sigma < 0.0) {
-            throw std::invalid_argument("blur sigma must be >= 0");
-        }
-    }
-
-    std::string name() const override
-    {
-        std::ostringstream os;
-        os << "blur:" << kernelSize_;
-        if (sigma_ > 0.0) {
-            os << ':' << sigma_;
-        }
-        return os.str();
-    }
+    GaussianBlur(int kernelSize, double sigma) : kernelSize_(kernelSize), sigma_(sigma) {}
 
     FrameInfo configure(const FrameInfo& input) override { return input; }
 
@@ -52,11 +31,32 @@ private:
     double sigma_;
 };
 
-}  // namespace
-
-StagePtr makeGaussianBlur(int kernelSize, double sigma)
+StageInfo makeInfo()
 {
-    return std::make_unique<GaussianBlur>(kernelSize, sigma);
+    StageInfo info;
+    info.name = "blur";
+    info.title = "Gaussian blur";
+    info.description = "Smooths the image with a Gaussian kernel (OpenCV)";
+    info.category = "filter";
+    info.params = {
+        param::integer("ksize", "Kernel size (odd)", 5, 3, 31, 2, "px"),
+        param::number("sigma",
+                      "Standard deviation; 0 = derived from the kernel size",
+                      0.0,
+                      0.0,
+                      20.0,
+                      0.1,
+                      "px"),
+    };
+    info.create = [](const ParamMap& p) {
+        return std::make_unique<GaussianBlur>(static_cast<int>(getInt(p, "ksize")),
+                                              getFloat(p, "sigma"));
+    };
+    return info;
 }
+
+SCIP_REGISTER_STAGE(makeInfo());
+
+}  // namespace
 
 }  // namespace scip::stages
