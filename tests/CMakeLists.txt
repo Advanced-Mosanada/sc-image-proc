@@ -15,6 +15,7 @@ add_executable(scip_tests
     test_io.cpp
     test_params.cpp
     test_pipeline.cpp
+    test_registry.cpp
     test_stages.cpp
     test_stats.cpp)
 target_link_libraries(scip_tests PRIVATE

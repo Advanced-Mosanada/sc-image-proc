@@ -5,6 +5,7 @@ add_library(scip_core STATIC
     frame.cpp
     params.cpp
     pipeline.cpp
+    registry.cpp
     stats.cpp)
 add_library(scip::core ALIAS scip_core)
 

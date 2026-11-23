@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace scip {
 
@@ -22,8 +23,10 @@ public:
     Stage(const Stage&) = delete;
     Stage& operator=(const Stage&) = delete;
 
-    /// Short identifier including parameters, e.g. "blur:5".
-    virtual std::string name() const = 0;
+    /// Identifier including parameters, e.g. "blur ksize=5". The registry sets it
+    /// from the stage's spec; stages may override it.
+    virtual std::string name() const { return label_; }
+    void setLabel(std::string label) { label_ = std::move(label); }
 
     /// Validate `input` and return the output format.
     /// Throws std::invalid_argument for inputs this stage cannot handle.
@@ -31,6 +34,9 @@ public:
 
     /// Process one frame from `in` into the pre-allocated `out`.
     virtual void process(const Frame& in, Frame& out) = 0;
+
+private:
+    std::string label_;
 };
 
 using StagePtr = std::unique_ptr<Stage>;
