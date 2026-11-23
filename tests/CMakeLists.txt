@@ -39,3 +39,7 @@ set_tests_properties(cli.rejects_unknown_stage PROPERTIES WILL_FAIL TRUE)
 
 # Installed next to the app so the same tests can be run on the board.
 install(TARGETS scip_tests RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/scip)
+
+add_test(NAME scipd.version COMMAND scipd --version)
+add_test(NAME scipd.rejects_bad_pipeline COMMAND scipd --port 0 -p "blur ksize=4")
+set_tests_properties(scipd.rejects_bad_pipeline PROPERTIES WILL_FAIL TRUE)
