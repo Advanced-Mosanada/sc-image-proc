@@ -37,3 +37,14 @@ TEST(LatencyStats, Reset)
     stats.reset();
     EXPECT_EQ(stats.count(), 0u);
 }
+
+TEST(LatencyStats, WindowKeepsRecentSamples)
+{
+    scip::LatencyStats stats(3);
+    for (int ms : {100, 100, 1, 2, 3}) {
+        stats.add(std::chrono::milliseconds(ms));
+    }
+    EXPECT_EQ(stats.count(), 3u);
+    EXPECT_DOUBLE_EQ(stats.maxMs(), 3.0);
+    EXPECT_DOUBLE_EQ(stats.meanMs(), 2.0);
+}

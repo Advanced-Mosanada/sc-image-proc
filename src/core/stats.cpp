@@ -14,12 +14,18 @@ constexpr double kNsPerMs = 1e6;
 
 void LatencyStats::add(std::chrono::nanoseconds duration)
 {
-    samplesNs_.push_back(duration.count());
+    if (window_ == 0 || samplesNs_.size() < window_) {
+        samplesNs_.push_back(duration.count());
+        return;
+    }
+    samplesNs_[next_] = duration.count();  // overwrite the oldest
+    next_ = (next_ + 1) % window_;
 }
 
 void LatencyStats::reset()
 {
     samplesNs_.clear();
+    next_ = 0;
 }
 
 double LatencyStats::minMs() const
