@@ -92,3 +92,66 @@ def test_whole_file_loop_does_not_end(clip):
     assert streamer.state == "playing"
     assert streamer.position() < 1.0  # wrapped around
     streamer.close()
+
+
+class GdpReceiver:
+    """What the target's tcp:// input does, in Python: raw frames from GDP over TCP."""
+
+    def __init__(self, port: int):
+        self.frames: list[tuple[str, int, int]] = []  # format, width, height
+        self.pipeline = media.Gst.parse_launch(
+            f"tcpserversrc host=127.0.0.1 port={port} ! gdpdepay "
+            "! appsink name=sink max-buffers=4 drop=true sync=false"
+        )
+        self.pipeline.set_state(media.Gst.State.PLAYING)
+
+    def poll(self) -> None:
+        sink = self.pipeline.get_by_name("sink")
+        while (sample := sink.emit("try-pull-sample", 0)) is not None:
+            s = sample.get_caps().get_structure(0)
+            self.frames.append((s.get_value("format"), s.get_value("width"), s.get_value("height")))
+
+    def stop(self) -> None:
+        self.pipeline.set_state(media.Gst.State.NULL)
+
+
+@pytest.mark.skipif(not media.has_element("gdppay"), reason="needs gdppay")
+def test_sends_raw_frames_over_tcp(clip):
+    port = free_udp_port()  # a free number; TCP and UDP ports are separate
+    receiver = GdpReceiver(port)
+    settings = media.StreamSettings(raw=True)
+    assert settings.uri(5000) == "tcp://:5000"
+    assert settings.megabits(720, 576, 25) == pytest.approx(124.4, abs=0.1)  # PAL I420
+    streamer = media.Streamer(settings=settings)
+    streamer.set_destination("127.0.0.1", port)
+    streamer.open(clip)
+    streamer.play()
+    run_for(1.0, streamer, receiver)
+    streamer.close()
+    receiver.stop()
+    assert len(receiver.frames) > 20
+    assert receiver.frames[-1] == ("I420", 320, 240)  # every pixel, as decoded
+
+
+def test_new_settings_keep_the_position(clip):
+    port = free_udp_port()
+    received = []
+    receiver = media.RtpReceiver(port, on_frame=received.append)
+    receiver.start()
+    streamer = media.Streamer()
+    streamer.set_destination("127.0.0.1", port)
+    streamer.open(clip)
+    streamer.seek(1.0)
+    streamer.play()
+    run_for(0.3, streamer, receiver)
+    quality = media.StreamSettings(quality=20, preset="veryfast", keyframe_interval=10)
+    assert quality.megabits(320, 240, 30) is None  # depends on the content
+    assert "quality 20" in quality.describe()
+    streamer.configure(quality)
+    assert streamer.state == "playing"
+    assert streamer.position() == pytest.approx(1.3, abs=0.25)
+    received.clear()
+    run_for(0.7, streamer, receiver)
+    streamer.close()
+    receiver.stop()
+    assert len(received) > 10  # the new encoder's stream decodes

@@ -1,8 +1,10 @@
 """Video on the host, with GStreamer (system python3-gi). No Qt in here.
 
-Streamer     a local video file -> H.264 over RTP/UDP to the target's
-             input rtp://:5000, with player controls (play, pause, seek,
-             speed, loop, A-B loop) and a preview of what is sent.
+Streamer     a local video file -> the target, with player controls (play,
+             pause, seek, speed, loop, A-B loop) and a preview of what is
+             sent. Either H.264 over RTP/UDP (input rtp://:5000; the
+             compression is set by StreamSettings) or raw frames in GDP
+             over TCP (input tcp://:5000; lossless, ~124 Mbit/s for PAL).
 RtpReceiver  H.264 over RTP/UDP from the target's output udp:HOST:5002 ->
              frames for display.
 
@@ -20,6 +22,7 @@ never notices the jump.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,6 +103,55 @@ def _error_text(message) -> str:
 # ---------------------------------------------------------------------------
 
 
+X264_PRESETS = (
+    "ultrafast",
+    "superfast",
+    "veryfast",
+    "faster",
+    "fast",
+    "medium",
+)
+RAW_FORMATS = {"I420": 1.5, "BGR": 3.0}  # bytes per pixel
+CONNECT_TIMEOUT = 3.0  # seconds: the target may still be opening its tcp:// input
+
+
+@dataclass(frozen=True)
+class StreamSettings:
+    """How the video travels to the target.
+
+    raw=False: H.264 over RTP/UDP, compressed by x264 (openh264 as a fallback):
+      quality 0 = constant bitrate `bitrate_kbps`; quality 1..51 = constant
+      quality (x264's CRF, lower is better, ~18 looks lossless); `preset`
+      trades encoding speed for quality per bit; a key frame every
+      `keyframe_interval` frames lets a late receiver start.
+    raw=True: every pixel as decoded, in GDP over TCP. I420 is what most videos
+      decode to (4:2:0), so it is lossless for them at half the size of BGR.
+    """
+
+    raw: bool = False
+    raw_format: str = "I420"
+    bitrate_kbps: int = 6000
+    quality: int = 0
+    preset: str = "ultrafast"
+    keyframe_interval: int = 30
+
+    def uri(self, port: int) -> str:
+        """The target's input for this stream."""
+        return f"{'tcp' if self.raw else 'rtp'}://:{port}"
+
+    def megabits(self, width: int, height: int, fps: float) -> float | None:
+        """Network load in Mbit/s; None when it depends on the content (quality mode)."""
+        if self.raw:
+            return width * height * RAW_FORMATS[self.raw_format] * (fps or 30.0) * 8 / 1e6
+        return None if self.quality else self.bitrate_kbps / 1000
+
+    def describe(self) -> str:
+        if self.raw:
+            return f"raw {self.raw_format}"
+        rate = f"quality {self.quality}" if self.quality else f"{self.bitrate_kbps} kbit/s"
+        return f"H.264 {rate}, {self.preset}"
+
+
 @dataclass
 class MediaInfo:
     path: str
@@ -120,14 +172,14 @@ class Streamer:
         on_frame: FrameCallback | None = None,
         on_error: Callable[[str], None] | None = None,
         preview_width: int = 640,
-        bitrate_kbps: int = 6000,
+        settings: StreamSettings | None = None,
     ):
         if not available():
             raise RuntimeError(f"GStreamer for Python is not available: {GST_ERROR}")
         self.on_frame = on_frame
         self.on_error = on_error
         self.preview_width = preview_width
-        self.bitrate_kbps = bitrate_kbps
+        self.settings = settings or StreamSettings()
         self.host = "127.0.0.1"
         self.port = 5000
         self.pipeline = None
@@ -137,6 +189,7 @@ class Streamer:
         self.loop = False
         self.a: float | None = None  # A-B loop, seconds
         self.b: float | None = None
+        self.broken = False  # the connection to the target failed: reconnect on play
 
     # --- file ---------------------------------------------------------------
 
@@ -146,14 +199,11 @@ class Streamer:
         path = Path(path).resolve()
         if not path.exists():
             raise FileNotFoundError(path)
-        encoder = self._encoder()
         description = (
             f'uridecodebin uri="{path.as_uri()}" caps="video/x-raw(ANY)" expose-all-streams=false '
             "! videoconvert ! tee name=t "
             # To the target: paced by the clock (sync=true) like a real camera.
-            f"t. ! queue max-size-buffers=4 ! {encoder} "
-            "! rtph264pay config-interval=1 pt=96 "
-            f"! udpsink name=udp host={self.host} port={self.port} sync=true "
+            f"t. ! queue max-size-buffers=4 ! {self._sender()} "
             # Preview: small, never holds the stream back. Decoded frames arrive
             # up to the encoder queue's 4 frames early (they wait for their time
             # in the sink), so this queue must hold more than that or it drops.
@@ -161,16 +211,24 @@ class Streamer:
             f"! video/x-raw,format=RGBx,width={self.preview_width},pixel-aspect-ratio=1/1 "
             "! appsink name=preview max-buffers=1 drop=true sync=true"
         )
-        self.pipeline = Gst.parse_launch(description)
-        self.pipeline.set_state(Gst.State.PAUSED)
-        change, _, _ = self.pipeline.get_state(10 * SECOND)
-        if change == Gst.StateChangeReturn.FAILURE:
+        # Raw: the TCP connection is made here; the target may still be (re)opening
+        # its input, so try again for a moment.
+        deadline = time.monotonic() + (CONNECT_TIMEOUT if self.settings.raw else 0)
+        while True:
+            self.pipeline = Gst.parse_launch(description)
+            self.pipeline.set_state(Gst.State.PAUSED)
+            change, _, _ = self.pipeline.get_state(10 * SECOND)
+            if change != Gst.StateChangeReturn.FAILURE:
+                break
             error = self._pop_error() or "cannot play this file"
             self.close()
-            raise RuntimeError(error)
+            if time.monotonic() > deadline or "connect" not in error.lower():
+                raise RuntimeError(error)
+            time.sleep(0.2)
         self.info = self._media_info(str(path))
         self.state = "paused"
         self.a = self.b = None
+        self.broken = False
         return self.info
 
     def close(self) -> None:
@@ -182,17 +240,33 @@ class Streamer:
 
     def set_destination(self, host: str, port: int) -> None:
         """Where the video goes; works while playing."""
+        if (host, port) == (self.host, self.port):
+            return
         self.host, self.port = host, port
-        if self.pipeline is not None:
+        if self.pipeline is None:
+            return
+        if self.settings.raw:
+            self._rebuild()  # a TCP connection cannot be moved
+        else:
             udp = self.pipeline.get_by_name("udp")
             udp.set_property("host", host)
             udp.set_property("port", port)
+
+    def configure(self, settings: StreamSettings) -> None:
+        """Change how the video is sent; an open file continues where it was."""
+        if settings == self.settings:
+            return
+        self.settings = settings
+        if self.pipeline is not None:
+            self._rebuild()
 
     # --- transport ----------------------------------------------------------
 
     def play(self) -> None:
         if self.pipeline is None:
             return
+        if self.broken:
+            self._rebuild()  # e.g. the target restarted its input
         if self.state == "ended":
             self.seek(self._range()[0])
         self.pipeline.set_state(Gst.State.PLAYING)
@@ -283,25 +357,59 @@ class Streamer:
                 text = _error_text(message)
                 self.pipeline.set_state(Gst.State.PAUSED)
                 self.state = "ended"
+                self.broken = True
                 if self.on_error:
                     self.on_error(text)
 
     # --- internals ------------------------------------------------------------
 
+    def _sender(self) -> str:
+        """Encoder (or not) and network sink, for the current settings."""
+        st = self.settings
+        if st.raw:
+            if st.raw_format not in RAW_FORMATS:
+                raise ValueError(f"raw format must be one of {', '.join(RAW_FORMATS)}")
+            return (
+                f"videoconvert ! video/x-raw,format={st.raw_format} ! gdppay "
+                f"! tcpclientsink name=tcp host={self.host} port={self.port} sync=true"
+            )
+        return (
+            f"{self._encoder()} ! rtph264pay config-interval=1 pt=96 "
+            f"! udpsink name=udp host={self.host} port={self.port} sync=true"
+        )
+
     def _encoder(self) -> str:
-        # Software H.264, tuned for latency: no B-frames, a key frame every
-        # second so a receiver that joins late starts quickly.
+        # Software H.264 tuned for latency: no B-frames, and a key frame every
+        # `keyframe_interval` frames so a receiver that joins late starts quickly.
+        st = self.settings
         if has_element("x264enc"):
+            if st.preset not in X264_PRESETS:
+                raise ValueError(f"preset must be one of {', '.join(X264_PRESETS)}")
+            rate = (
+                f"pass=qual quantizer={st.quality}" if st.quality else f"bitrate={st.bitrate_kbps}"
+            )
             return (
                 "videoconvert ! video/x-raw,format=I420 ! x264enc tune=zerolatency "
-                f"speed-preset=ultrafast key-int-max=30 bitrate={self.bitrate_kbps}"
+                f"speed-preset={st.preset} key-int-max={st.keyframe_interval} {rate}"
             )
-        if has_element("openh264enc"):
+        if has_element("openh264enc"):  # no presets or quality mode
             return (
                 "videoconvert ! video/x-raw,format=I420 ! openh264enc "
-                f"bitrate={self.bitrate_kbps * 1000} gop-size=30"
+                f"bitrate={st.bitrate_kbps * 1000} gop-size={st.keyframe_interval}"
             )
         raise RuntimeError("no H.264 encoder (install gstreamer1.0-plugins-ugly for x264enc)")
+
+    def _rebuild(self) -> None:
+        """Open the same file again (new settings or destination), where it was."""
+        if self.info is None:
+            return
+        path, position, state = self.info.path, self.position(), self.state
+        a, b = self.a, self.b
+        self.open(path)
+        self.a, self.b = a, b
+        self.seek(position)
+        if state == "playing":
+            self.play()
 
     def _media_info(self, path: str) -> MediaInfo:
         ok, duration = self.pipeline.query_duration(Gst.Format.TIME)
