@@ -257,3 +257,74 @@ TEST(GstSource, ReceivesRtpFromAUdpOutput)
     EXPECT_EQ(received.height(), 128);
     EXPECT_EQ(source->info(), received.info());
 }
+
+namespace {
+
+/// Frames to `port` the way the host GUI's raw mode sends them (GDP over TCP).
+scip::FrameSinkPtr rawTcpSender(int port, const FrameInfo& info)
+{
+    return scip::io::openSink("gst:appsrc name=scip_src ! gdppay ! tcpclientsink host=127.0.0.1 "
+                              "port=" +
+                                  std::to_string(port),
+                              info,
+                              30.0);
+}
+
+/// Send `frame` until the source has delivered `wanted` frames (or ~3 s).
+int sendAndReceive(scip::FrameSink& sink,
+                   scip::FrameSource& source,
+                   const Frame& frame,
+                   int wanted,
+                   Frame& received)
+{
+    int frames = 0;
+    for (int i = 0; i < 300 && frames < wanted; ++i) {
+        sink.write(frame);
+        if (source.tryRead(received, std::chrono::milliseconds(10)) == scip::ReadStatus::Frame) {
+            ++frames;
+        }
+    }
+    return frames;
+}
+
+}  // namespace
+
+TEST(GstSource, ReceivesRawFramesOverTcpLosslessly)
+{
+    SKIP_WITHOUT_GSTREAMER();
+    if (!scip::io::hasGstElement("gdppay") || !scip::io::hasGstElement("tcpserversrc")) {
+        GTEST_SKIP() << "needs gdppay and tcpserversrc";
+    }
+    auto source = scip::io::openSource("tcp://127.0.0.1:47396", {});
+    EXPECT_TRUE(source->isLive());
+
+    const FrameInfo info{160, 128, PixelFormat::Bgr8};
+    const Frame pattern = scip::io::makeTestPattern(info);
+    Frame received;
+    {
+        auto sink = rawTcpSender(47396, info);
+        ASSERT_GE(sendAndReceive(*sink, *source, pattern, 3, received), 3);
+        sink->close();
+    }
+    ASSERT_EQ(received.info(), info);
+    for (int y = 0; y < info.height; ++y) {  // raw: every byte as sent
+        ASSERT_EQ(std::memcmp(received.row(y), pattern.row(y), info.rowBytes()), 0) << "row " << y;
+    }
+
+    // The sender went away; the next one (another size) is accepted once the
+    // source has noticed and listens again (a sender retries meanwhile).
+    const FrameInfo other{96, 64, PixelFormat::Bgr8};
+    scip::FrameSinkPtr sink;
+    for (int attempt = 0; attempt < 50 && !sink; ++attempt) {
+        try {
+            sink = rawTcpSender(47396, other);
+        } catch (const std::runtime_error&) {
+            source->tryRead(received, std::chrono::milliseconds(20));
+        }
+    }
+    ASSERT_TRUE(sink);
+    ASSERT_GE(sendAndReceive(*sink, *source, scip::io::makeTestPattern(other), 3, received), 3);
+    sink->close();
+    EXPECT_EQ(received.info(), other);
+    EXPECT_THROW(scip::io::openSource("tcp://:0", {}), std::invalid_argument);
+}

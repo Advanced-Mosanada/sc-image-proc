@@ -46,6 +46,11 @@ FrameSourcePtr openRtp(const std::string& address, int port, const SourceOptions
     unavailable("rtp input " + address + ":" + std::to_string(port));
 }
 
+FrameSourcePtr openTcp(const std::string& address, int port, const SourceOptions&)
+{
+    unavailable("tcp input " + address + ":" + std::to_string(port));
+}
+
 FrameSourcePtr openUri(const std::string& uri, const SourceOptions&)
 {
     unavailable("input '" + uri + "'");

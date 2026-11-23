@@ -144,6 +144,7 @@ Pipelines are written like GStreamer launch lines: `gray ! blur ksize=5 ! resize
 | `video.mp4` / `.mkv` / `.mov` ... | video file, until it ends (or `-n`) |
 | `camera:/dev/video0[:WxH]` | V4L2 camera, until Ctrl+C; `--list-devices` shows its sizes |
 | `rtp://:5000` | H.264 over RTP/UDP sent to this machine (live) |
+| `tcp://:5000` | raw frames in GDP over TCP, lossless (live), e.g. from the GUI |
 | `rtsp://...`, `http(s)://...` | network streams GStreamer can play |
 | `gst:'... ! appsink name=scip_sink'` | any GStreamer pipeline |
 

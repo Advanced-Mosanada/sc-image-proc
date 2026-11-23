@@ -17,11 +17,13 @@ host (GUI)                               target (scipd)
    |  <------  responses + event.* notifications
    |                                        |
    |  UDP 5000  H.264/RTP video  -------->  |    input  rtp://:5000
+   |  or TCP 5000  raw video (GDP)  ----->  |    input  tcp://:5000   (lossless)
    |  <--------  H.264/RTP video  UDP 5002  |    output udp:HOST:5002
 ```
 
 Video never travels over the control connection; it uses standard RTP
-streams that any GStreamer, VLC or ffmpeg can produce or show.
+streams that any GStreamer, VLC or ffmpeg can produce or show, or raw
+frames in GStreamer's GDP framing over TCP when nothing may be lost.
 
 ## 1. Transport
 
@@ -199,6 +201,7 @@ The same strings as `scip-cli -i` / `-o`:
 | `/path/clip.mp4` | video file on the target (mp4, mkv, mov, avi, webm, h264) |
 | `camera:/dev/video0[:1280x720]` | V4L2 camera (live) |
 | `rtp://:5000` | H.264 over RTP/UDP sent to the target, e.g. by the GUI (live) |
+| `tcp://:5000` | Raw frames in GDP over TCP, the GUI's lossless mode (live; the size travels with the frames; waits for the next sender when one leaves) |
 | `rtsp://...`, `http(s)://...`, `file://...` | anything GStreamer's `uridecodebin` plays |
 | `gst:... ! appsink name=scip_sink` | any GStreamer pipeline |
 

@@ -123,6 +123,7 @@ public:
         std::uint64_t maxFrames = 0;  ///< 0 = no limit
         bool live = false;            ///< camera / network: newest frame only, may pause
         bool loop = false;            ///< files: start again at the end
+        bool relisten = false;        ///< live servers: wait for the next sender at the end
     };
 
     GstSource(const std::string& description,
@@ -225,6 +226,10 @@ public:
             if (!gst_app_sink_is_eos(appSink())) {
                 return ReadStatus::Timeout;
             }
+            if (config_.relisten) {
+                relisten();
+                return ReadStatus::Timeout;
+            }
             if (!config_.loop || produced_ == 0) {
                 return ReadStatus::End;
             }
@@ -262,7 +267,14 @@ private:
         }
     }
 
-    Frame toFrame(GstSample* sample)
+    /// A server source whose sender left (EOS): start again and wait for the next one.
+    void relisten()
+    {
+        gst_element_set_state(pipeline_.get(), GST_STATE_NULL);
+        setState(pipeline_.get(), GST_STATE_PLAYING, label_);
+    }
+
+        Frame toFrame(GstSample* sample)
     {
         auto holder = std::make_shared<MappedSample>();
         holder->sample = sample;  // owned from here on, also if we throw below
@@ -397,6 +409,37 @@ FrameSourcePtr openRtp(const std::string& address, int port, const SourceOptions
             if (!address.empty()) {
                 g_object_set(udp.get(), "address", address.c_str(), nullptr);
             }
+        });
+}
+
+FrameSourcePtr openTcp(const std::string& address, int port, const SourceOptions& options)
+{
+    // Raw frames in GDP (GStreamer's own framing: caps travel with the data) over
+    // TCP, as the host GUI sends in raw mode:
+    //   ... ! video/x-raw,format=I420 ! gdppay ! tcpclientsink host=TARGET port=5000
+    // Lossless, and the size may change with every sender: each frame carries its
+    // format. When a sender disconnects we listen for the next one.
+    // (No decodebin: its output pad would not be relinked after the restart.)
+    const std::string description = "tcpserversrc name=scip_tcp ! gdpdepay ! " +
+                                    convertForScip(options) +
+                                    " ! appsink name=scip_sink sync=false";
+    GstSource::Config config;
+    config.maxFrames = options.maxFrames;
+    config.live = true;
+    config.relisten = true;
+    const std::string host = address.empty() ? std::string("0.0.0.0") : address;
+    return std::make_unique<GstSource>(
+        description,
+        config,
+        "tcp " + host + ":" + std::to_string(port),
+        [&](GstElement* pipeline, GstElement*) {
+            // The default host is "localhost": a sender on the network could not connect.
+            g_object_set(childByName(pipeline, "scip_tcp").get(),
+                         "host",
+                         host.c_str(),
+                         "port",
+                         port,
+                         nullptr);
         });
 }
 

@@ -40,6 +40,9 @@ struct SourceOptions {
 ///   <video file>                  .mp4/.mkv/.mov/.avi/.webm/.h264, decoded by GStreamer
 ///   camera:/dev/videoN[:WxH]      V4L2 camera via GStreamer (live)
 ///   rtp://[ADDRESS]:PORT          H.264 over RTP/UDP, e.g. rtp://:5000 (live)
+///   tcp://[ADDRESS]:PORT          raw video in GDP over TCP, e.g. tcp://:5000 (live): the
+///                                 host GUI's lossless mode; waits for the next sender
+///                                 when one disconnects
 ///   rtsp://... http(s)://... file://...   anything uridecodebin plays (rtsp: live)
 ///   gst:<launch line>             any GStreamer pipeline ending in `appsink name=scip_sink`
 /// Live sources may start before the sender: their format arrives with the

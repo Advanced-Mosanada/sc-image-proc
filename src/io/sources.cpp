@@ -46,6 +46,27 @@ private:
     std::uint64_t produced_ = 0;
 };
 
+/// rtp://:5000, rtp://@:5000 (any address), rtp://239.1.2.3:5000 (multicast);
+/// the same for tcp:// (an address of this machine to listen on).
+std::pair<std::string, int> parseListenAddress(const std::string& uri, const std::string& scheme)
+{
+    const std::string usage =
+        "usage: " + scheme + "://[ADDRESS]:PORT, e.g. " + scheme + "://:5000";
+    std::string rest = uri.substr(scheme.size() + 3);
+    if (!rest.empty() && rest.front() == '@') {
+        rest.erase(0, 1);
+    }
+    const auto colon = rest.rfind(':');
+    if (colon == std::string::npos) {
+        throw std::invalid_argument(usage);
+    }
+    const int port = detail::parseInt(std::string_view(rest).substr(colon + 1), scheme + " port");
+    if (port <= 0 || port > 65535) {
+        throw std::invalid_argument(scheme + " port must be 1..65535");
+    }
+    return {rest.substr(0, colon), port};
+}
+
 }  // namespace
 
 Frame makeTestPattern(const FrameInfo& info)
@@ -111,13 +132,12 @@ void validateSourceUri(const std::string& uri)
         }
         return;
     }
-    if (detail::startsWith(uri, "rtp://")) {
-        const auto colon = uri.rfind(':');
-        const int port = detail::parseInt(std::string_view(uri).substr(colon + 1), "rtp port");
-        if (colon < 6 || port <= 0 || port > 65535) {
-            throw std::invalid_argument("usage: rtp://[ADDRESS]:PORT, e.g. rtp://:5000");
+    for (const char* scheme : {"rtp", "tcp"}) {
+        const std::string prefix = std::string(scheme) + "://";
+        if (detail::startsWith(uri, prefix)) {
+            parseListenAddress(uri, scheme);
+            return;
         }
-        return;
     }
     if (detail::startsWith(uri, "gst:")) {
         if (uri.find("scip_sink") == std::string::npos) {
@@ -166,22 +186,13 @@ FrameSourcePtr openSource(const std::string& uri, const SourceOptions& options)
         }
         return gst::openCamera(std::string(parts[0]), width, height, options);
     }
-    constexpr std::string_view kRtp = "rtp://";
-    if (detail::startsWith(uri, kRtp)) {
-        // rtp://:5000, rtp://@:5000 (any address), rtp://239.1.2.3:5000 (multicast)
-        std::string rest = uri.substr(kRtp.size());
-        if (!rest.empty() && rest.front() == '@') {
-            rest.erase(0, 1);
-        }
-        const auto colon = rest.rfind(':');
-        if (colon == std::string::npos) {
-            throw std::invalid_argument("usage: rtp://[ADDRESS]:PORT, e.g. rtp://:5000");
-        }
-        const int port = detail::parseInt(std::string_view(rest).substr(colon + 1), "rtp port");
-        if (port <= 0 || port > 65535) {
-            throw std::invalid_argument("rtp port must be 1..65535");
-        }
-        return gst::openRtp(rest.substr(0, colon), port, options);
+    if (detail::startsWith(uri, "rtp://")) {
+        const auto [address, port] = parseListenAddress(uri, "rtp");
+        return gst::openRtp(address, port, options);
+    }
+    if (detail::startsWith(uri, "tcp://")) {
+        const auto [address, port] = parseListenAddress(uri, "tcp");
+        return gst::openTcp(address, port, options);
     }
     if (uri.find("://") != std::string::npos) {
         return gst::openUri(uri, options);

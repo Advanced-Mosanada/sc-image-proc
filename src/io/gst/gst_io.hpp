@@ -21,6 +21,7 @@ FrameSourcePtr openVideoFile(const std::string& path, const SourceOptions& optio
 FrameSourcePtr
 openCamera(const std::string& device, int width, int height, const SourceOptions& options);
 FrameSourcePtr openRtp(const std::string& address, int port, const SourceOptions& options);
+FrameSourcePtr openTcp(const std::string& address, int port, const SourceOptions& options);
 FrameSourcePtr openUri(const std::string& uri, const SourceOptions& options);
 FrameSourcePtr openLaunch(const std::string& description, const SourceOptions& options);
 
