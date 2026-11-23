@@ -236,7 +236,30 @@ private:
 struct EncoderChain {
     std::string elements;
     PushFormat push;
+    cv::Size maxSize;  ///< largest frame the encoder accepts; empty = no limit
 };
+
+/// Frames larger than the encoder takes are scaled down to fit, keeping the
+/// aspect ratio (a 2304x1536 camera -> 1632x1088 for the VPU). Returns the size
+/// to push, or an empty size when the frame fits as it is.
+cv::Size encoderInputSize(const EncoderChain& encoder, const FrameInfo& info)
+{
+    const cv::Size max = encoder.maxSize;
+    if (max.empty() || (info.width <= max.width && info.height <= max.height)) {
+        return {};
+    }
+    const double scale = std::min(static_cast<double>(max.width) / info.width,
+                                  static_cast<double>(max.height) / info.height);
+    // Even sizes: 4:2:0 encoders need them.
+    return {static_cast<int>(info.width * scale) & ~1, static_cast<int>(info.height * scale) & ~1};
+}
+
+std::string sizeNote(const cv::Size& size)
+{
+    return size.empty() ? std::string()
+                        : " (scaled to " + std::to_string(size.width) + "x" +
+                              std::to_string(size.height) + ")";
+}
 
 /// H.264 encoder chain: the VPU on the i.MX 8M Plus, x264 (software) on a PC.
 ///
@@ -246,13 +269,14 @@ struct EncoderChain {
 EncoderChain h264Encoder(bool lowLatency)
 {
     if (hasElement("vpuenc_h264")) {
-        return {"vpuenc_h264", PushFormat::Bgrx};
+        return {"vpuenc_h264", PushFormat::Bgrx, cv::Size(1920, 1088)};
     }
     if (hasElement("x264enc")) {
         return {lowLatency ? "videoconvert ! video/x-raw,format=I420 ! x264enc tune=zerolatency "
                              "speed-preset=ultrafast key-int-max=30"
                            : "videoconvert ! video/x-raw,format=I420 ! x264enc speed-preset=fast",
-                PushFormat::Native};
+                PushFormat::Native,
+                cv::Size()};
     }
     throw std::runtime_error("no H.264 encoder found (vpuenc_h264 or x264enc)");
 }
@@ -331,15 +355,16 @@ FrameSinkPtr openDisplay(const FrameInfo& info, double fps, int connector)
 FrameSinkPtr openUdp(const std::string& host, int port, const FrameInfo& info, double fps)
 {
     const EncoderChain encoder = h264Encoder(true);
+    const cv::Size size = encoderInputSize(encoder, info);
     const std::string description = "appsrc name=scip_src ! " + encoder.elements +
                                     " ! h264parse ! rtph264pay config-interval=1 pt=96 ! "
                                     "udpsink name=scip_udp sync=false";
     return std::make_unique<GstSink>(description,
                                      info,
                                      fps,
-                                     "udp " + host + ":" + std::to_string(port),
+                                     "udp " + host + ":" + std::to_string(port) + sizeNote(size),
                                      encoder.push,
-                                     cv::Size{},
+                                     size,
                                      [&](GstElement* pipeline) {
                                          g_object_set(childByName(pipeline, "scip_udp").get(),
                                                       "host",
@@ -365,14 +390,15 @@ FrameSinkPtr openVideoFileSink(const std::string& path, const FrameInfo& info, d
         throw std::invalid_argument("can record .mp4 or .mkv, not '" + ext + "'");
     }
     const EncoderChain encoder = h264Encoder(false);
+    const cv::Size size = encoderInputSize(encoder, info);
     const std::string description = "appsrc name=scip_src ! " + encoder.elements +
                                     " ! h264parse ! " + muxer + " ! filesink name=scip_file";
     return std::make_unique<GstSink>(description,
                                      info,
                                      fps,
-                                     "file " + path,
+                                     "file " + path + sizeNote(size),
                                      encoder.push,
-                                     cv::Size{},
+                                     size,
                                      [&](GstElement* pipeline) {
                                          g_object_set(childByName(pipeline, "scip_file").get(),
                                                       "location",
