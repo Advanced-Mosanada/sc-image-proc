@@ -124,6 +124,10 @@ class PlayerPanel(Card):
         self.file_label.setObjectName("muted")
         self.file_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.header.insertWidget(1, self.file_label, 1)
+        self.route_label = QLabel()
+        self.route_label.setObjectName("muted")
+        self.route_label.setToolTip("How the video goes to the target (Input tab)")
+        self.header.insertWidget(2, self.route_label)
         self.open_button = QPushButton("Open")
         set_icon(self.open_button, "folder", size=16)
         self.open_button.setToolTip("Open a video file (Ctrl+O), or drop one on the left view")
@@ -213,7 +217,20 @@ class PlayerPanel(Card):
 
     def set_destination(self, host: str, port: int) -> None:
         if self.streamer:
-            self.streamer.set_destination(host, port)
+            self._guarded(self.streamer.set_destination, host, port)
+
+    def configure(self, stream: media.StreamSettings) -> None:
+        """How the video is sent (H.264 settings, or raw); applies while playing."""
+        if self.streamer:
+            self._guarded(self.streamer.configure, stream)
+            self.route_label.setText(f"\u2192 {stream.describe()}")
+            self._update_controls()
+
+    def _guarded(self, action, *args) -> None:
+        try:
+            action(*args)
+        except (OSError, RuntimeError, ValueError) as error:
+            self.message.emit(f"player: {error}")
 
     def choose_file(self) -> None:
         folder = settings.get("player/folder", "")

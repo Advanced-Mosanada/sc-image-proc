@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QRect, QSize, Qt, Signal
+from PySide6.QtCore import QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -24,8 +24,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import theme
+from .. import settings, theme
 from ..icons import icon, pixmap
+from ..media import X264_PRESETS, MediaInfo, StreamSettings
 from ..protocol import VIDEO_FROM_TARGET_PORT, VIDEO_TO_TARGET_PORT
 from ..qt_client import QtAipcClient
 from .common import Card, tool_button
@@ -155,6 +156,7 @@ class InputPanel(QScrollArea):
     """Chooses the target's input; `streaming_from_pc` tells the player to send."""
 
     streaming_from_pc = Signal(bool, int)  # on, port
+    stream_settings_changed = Signal(object)  # StreamSettings, while streaming from the PC
 
     def __init__(self, client: QtAipcClient, parent: QWidget | None = None):
         super().__init__(parent)
@@ -177,13 +179,59 @@ class InputPanel(QScrollArea):
         self.settings_card.body.addWidget(self.pages)
         layout.addWidget(self.settings_card)
 
-        # From this PC: the player sends to rtp://:PORT on the target.
+        # From this PC: the player sends H.264 to rtp://:PORT on the target, or
+        # raw frames to tcp://:PORT.
         form = self.pages.add_form()
+        self.stream_form = form
         self.pc_port = port_box(VIDEO_TO_TARGET_PORT)
-        form.addRow("RTP port on the target", self.pc_port)
+        form.addRow("Port on the target", self.pc_port)
+        self.transport = QComboBox()
+        self.transport.addItem("H.264, compressed (RTP over UDP)", False)
+        self.transport.addItem("Raw frames, lossless (TCP)", True)
+        self.transport.setToolTip(
+            "Raw: every pixel as decoded; fine for PAL-size video on a gigabit link"
+        )
+        form.addRow("Sent as", self.transport)
+        self.rate_mode = QComboBox()
+        self.rate_mode.addItems(["Constant bitrate", "Constant quality"])
+        form.addRow("Rate control", self.rate_mode)
+        self.bitrate = QSpinBox(minimum=100, maximum=200_000, singleStep=500)
+        self.bitrate.setSuffix(" kbit/s")
+        form.addRow("Bitrate", self.bitrate)
+        self.quality = QSpinBox(minimum=1, maximum=51)
+        self.quality.setToolTip("x264's CRF: lower is better. 18 looks lossless, 23 is the default")
+        form.addRow("Quality (CRF)", self.quality)
+        self.preset = QComboBox()
+        self.preset.addItems(X264_PRESETS)
+        self.preset.setToolTip(
+            "Slower presets give a better picture for the same bitrate, at more CPU on this PC"
+        )
+        form.addRow("Encoder preset", self.preset)
+        self.keyframes = QSpinBox(minimum=1, maximum=600)
+        self.keyframes.setSuffix(" frames")
+        self.keyframes.setToolTip("A receiver that joins late waits for the next key frame")
+        form.addRow("Key frame every", self.keyframes)
+        self.raw_format = QComboBox()
+        self.raw_format.addItem("I420 (4:2:0, as most videos decode)", "I420")
+        self.raw_format.addItem("BGR (4:4:4)", "BGR")
+        form.addRow("Pixel format", self.raw_format)
+        self.stream_estimate = QLabel()
+        self.stream_estimate.setObjectName("muted")
+        form.addRow(self.stream_estimate)
         hint = QLabel("Then open a video in the player and press play.")
         hint.setObjectName("muted")
         form.addRow(hint)
+        self.media: MediaInfo | None = None
+        self.current_uri = ""  # the target's input, as last reported
+        self._load_stream_settings()
+        # Changes apply by themselves while the PC streams, once the typing stops.
+        self.stream_timer = QTimer(self, singleShot=True, interval=400)
+        self.stream_timer.timeout.connect(self._push_stream_settings)
+        for combo in (self.transport, self.rate_mode, self.preset, self.raw_format):
+            combo.currentIndexChanged.connect(self._stream_edited)
+        for box in (self.bitrate, self.quality, self.keyframes):
+            box.valueChanged.connect(self._stream_edited)
+        self._show_stream_rows()
 
         # Camera on the target.
         form = self.pages.add_form()
@@ -248,7 +296,99 @@ class InputPanel(QScrollArea):
         self.pages.setCurrentIndex(index)
         self.settings_card.title.setText(KIND_LABELS[index])
 
-    # --- from the target ----------------------------------------------------
+    # --- how the PC streams ----------------------------------------------------
+
+    def stream_settings(self) -> StreamSettings:
+        return StreamSettings(
+            raw=bool(self.transport.currentData()),
+            raw_format=self.raw_format.currentData(),
+            bitrate_kbps=self.bitrate.value(),
+            quality=self.quality.value() if self.rate_mode.currentIndex() == 1 else 0,
+            preset=self.preset.currentText(),
+            keyframe_interval=self.keyframes.value(),
+        )
+
+    def set_media(self, info: MediaInfo | None) -> None:
+        """The player's file, for the bandwidth estimate."""
+        self.media = info
+        self._show_stream_rows()
+
+    def _load_stream_settings(self) -> None:
+        d = StreamSettings()
+        self.transport.setCurrentIndex(1 if settings.get("stream/raw", d.raw, bool) else 0)
+        fmt = settings.get("stream/raw_format", d.raw_format, str)
+        self.raw_format.setCurrentIndex(max(0, self.raw_format.findData(fmt)))
+        self.bitrate.setValue(settings.get("stream/bitrate_kbps", d.bitrate_kbps, int))
+        quality = settings.get("stream/quality", d.quality, int)
+        self.rate_mode.setCurrentIndex(1 if quality else 0)
+        self.quality.setValue(quality or 18)
+        preset = settings.get("stream/preset", d.preset, str)
+        self.preset.setCurrentText(preset if preset in X264_PRESETS else d.preset)
+        self.keyframes.setValue(settings.get("stream/keyframe_interval", d.keyframe_interval, int))
+
+    def _set_transport(self, raw: bool) -> None:
+        if bool(self.transport.currentData()) != raw:
+            self.transport.blockSignals(True)
+            self.transport.setCurrentIndex(1 if raw else 0)
+            self.transport.blockSignals(False)
+            self._show_stream_rows()
+            settings.put("stream/raw", raw)
+
+    def _show_stream_rows(self) -> None:
+        st = self.stream_settings()
+        form = self.stream_form
+        for widget, visible in (
+            (self.rate_mode, not st.raw),
+            (self.bitrate, not st.raw and not st.quality),
+            (self.quality, not st.raw and bool(st.quality)),
+            (self.preset, not st.raw),
+            (self.keyframes, not st.raw),
+            (self.raw_format, st.raw),
+        ):
+            form.setRowVisible(widget, visible)
+        if self.media and self.media.width:
+            w, h, fps = self.media.width, self.media.height, self.media.fps or 30.0
+            what = "this video"
+        else:
+            w, h, fps = 720, 576, 25.0
+            what = "PAL"
+        mbits = st.megabits(w, h, fps)
+        size = f"{w}\u00d7{h} at {fps:g} fps"
+        if mbits is None:
+            self.stream_estimate.setText(f"Bitrate follows the picture ({what}: {size})")
+        elif st.raw:
+            self.stream_estimate.setText(
+                f"\u2248 {mbits:.0f} Mbit/s for {what} ({size}); gigabit Ethernet carries ~940"
+            )
+        else:
+            self.stream_estimate.setText(f"{mbits:g} Mbit/s")
+
+    def _stream_edited(self) -> None:
+        st = self.stream_settings()
+        for key, value in (
+            ("raw", st.raw),
+            ("raw_format", st.raw_format),
+            ("bitrate_kbps", st.bitrate_kbps),
+            ("quality", st.quality),
+            ("preset", st.preset),
+            ("keyframe_interval", st.keyframe_interval),
+        ):
+            settings.put(f"stream/{key}", value)
+        self._show_stream_rows()
+        self.stream_timer.start()
+
+    def _push_stream_settings(self) -> None:
+        """While the PC streams: new encoder settings go to the player; a new
+        transport also changes the target's input (rtp:// <-> tcp://)."""
+        if self._listen_port(self.current_uri) is None or self.kind.currentIndex() != FROM_PC:
+            return
+        st = self.stream_settings()
+        if self.current_uri == st.uri(self.pc_port.value()):
+            self.stream_settings_changed.emit(st)
+        else:
+            self.apply()
+
+        # --- from the target ----------------------------------------------------
 
     def refresh_devices(self) -> None:
         self.client.call("input.devices", on_result=self.set_devices)
@@ -269,13 +409,17 @@ class InputPanel(QScrollArea):
         uri = current.get("uri", "")
         self.current.setText(f"Target input: <b>{describe_uri(uri)}</b>")
         self.gray.setChecked(bool(current.get("gray")))
-        port = self._rtp_port(uri)
+        self.current_uri = uri
+        port = self._listen_port(uri)
         if port is not None:
-            if self.kind.currentIndex() != NETWORK:
+            raw = uri.startswith("tcp://")
+            if raw or self.kind.currentIndex() != NETWORK:
                 self.kind.setCurrentIndex(FROM_PC)
-            (self.pc_port if self.kind.currentIndex() == FROM_PC else self.network_port).setValue(
-                port
-            )
+            if self.kind.currentIndex() == FROM_PC:
+                self.pc_port.setValue(port)
+                self._set_transport(raw)
+            else:
+                self.network_port.setValue(port)
         elif uri.startswith("camera:"):
             self.kind.setCurrentIndex(CAMERA)
             index = self.mode.findData(uri)
@@ -299,9 +443,10 @@ class InputPanel(QScrollArea):
     def apply(self) -> None:
         kind = self.kind.currentIndex()
         params: dict[str, Any] = {"gray": self.gray.isChecked()}
-        if kind in (FROM_PC, NETWORK):
-            port = self.pc_port if kind == FROM_PC else self.network_port
-            params["uri"] = f"rtp://:{port.value()}"
+        if kind == FROM_PC:
+            params["uri"] = self.stream_settings().uri(self.pc_port.value())
+        elif kind == NETWORK:
+            params["uri"] = f"rtp://:{self.network_port.value()}"
         elif kind == CAMERA:
             mode = self.mode.currentData()
             if not mode:
@@ -349,8 +494,9 @@ class InputPanel(QScrollArea):
         self.mode.setCurrentIndex(best)
 
     @staticmethod
-    def _rtp_port(uri: str) -> int | None:
-        if uri.startswith("rtp://") and ":" in uri[6:]:
+    def _listen_port(uri: str) -> int | None:
+        """The port of an rtp:// or tcp:// input."""
+        if uri.startswith(("rtp://", "tcp://")) and ":" in uri[6:]:
             try:
                 return int(uri.rsplit(":", 1)[1])
             except ValueError:

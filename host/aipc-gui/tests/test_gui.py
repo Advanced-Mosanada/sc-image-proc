@@ -73,3 +73,29 @@ def test_streams_a_file_to_the_target_and_shows_the_result(qtbot, window, clip):
     qtbot.waitUntil(lambda: window.last_stats.get("state") == "running", timeout=3000)
     assert window.last_stats["output_info"]["format"] == "gray8"
     assert window.receiver.port == back
+
+
+@pytest.mark.skipif(not media.has_element("gdppay"), reason="needs gdppay")
+def test_streams_raw_frames_to_the_target(qtbot, window, clip):
+    to_target, back = free_udp_port(), free_udp_port()
+    window.inputs.kind.setCurrentIndex(FROM_PC)
+    window.inputs.pc_port.setValue(to_target)
+    window.inputs.transport.setCurrentIndex(1)  # raw, lossless
+    assert "Mbit/s" in window.inputs.stream_estimate.text()
+    window.inputs.apply()
+    qtbot.waitUntil(lambda: window.inputs.current_uri == f"tcp://:{to_target}", timeout=3000)
+    window.outputs.to_pc_port.setValue(back)
+    window.outputs.to_pc.setChecked(True)
+    window.outputs.apply()
+
+    assert window.player.open(str(clip))
+    assert "raw I420" in window.player.route_label.text()
+    window.player.toggle()  # play
+    qtbot.waitUntil(lambda: window.result_view.image is not None, timeout=8000)
+    qtbot.waitUntil(lambda: window.last_stats.get("state") == "running", timeout=3000)
+    assert window.last_stats["input"]["info"]["width"] == 320
+
+    # Back to H.264 while playing: the target's input follows by itself.
+    window.inputs.transport.setCurrentIndex(0)
+    qtbot.waitUntil(lambda: window.inputs.current_uri == f"rtp://:{to_target}", timeout=3000)
+    qtbot.waitUntil(lambda: window.last_stats.get("state") == "running", timeout=5000)

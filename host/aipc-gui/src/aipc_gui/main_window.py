@@ -92,6 +92,8 @@ class MainWindow(QMainWindow):
         self.player.message.connect(self.show_message)
         self.inputs = InputPanel(self.client)
         self.inputs.streaming_from_pc.connect(self._streaming_from_pc)
+        self.inputs.stream_settings_changed.connect(self.player.configure)
+        self.player.opened.connect(lambda _path: self.inputs.set_media(self.player.streamer.info))
         self.outputs = OutputPanel(self.client)
         self.outputs.preview_port.connect(self._set_preview)
         self.stats = StatsPanel()
@@ -448,7 +450,9 @@ class MainWindow(QMainWindow):
 
     def _streaming_from_pc(self, on: bool, port: int) -> None:
         if on:
+            # Destination first: new settings then connect straight to it.
             self.player.set_destination(self.client.host, port)
+            self.player.configure(self.inputs.stream_settings())
 
     def _set_preview(self, port: int) -> None:
         """Receive the target's result on `port` (0 = stop)."""
