@@ -9,69 +9,102 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QGroupBox,
-    QHBoxLayout,
+    QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QPushButton,
+    QMenu,
     QScrollArea,
     QSplitter,
+    QStyledItemDelegate,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from .. import theme
+from ..icons import icon
 from ..qt_client import QtAipcClient
+from .common import Card, tool_button
 from .params import ParamEditor
 
 ID_ROLE = Qt.ItemDataRole.UserRole
+BADGE_ROLE = Qt.ItemDataRole.UserRole + 1  # (text, kind): kind "time" | "error" | "off"
 EDIT_DELAY_MS = 120  # a slider sends at most ~8 updates per second
 
 
 class FunctionList(QWidget):
-    """The functions the target offers, by category."""
+    """The functions the target offers, by category, with a search box."""
 
     def __init__(self, on_add):
         super().__init__()
         self.on_add = on_add
+        self.functions: list[dict[str, Any]] = []
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.filter = QLineEdit(placeholderText="Filter functions...")
+        self.filter = QLineEdit(placeholderText="Search functions")
+        self.filter.setClearButtonEnabled(True)
+        self.search_icon = self.filter.addAction(
+            icon("search", theme.current().muted), QLineEdit.ActionPosition.LeadingPosition
+        )
         self.filter.textChanged.connect(self._apply_filter)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Function", "Title"])
+        self.tree.setHeaderHidden(True)
+        self.tree.setColumnCount(2)
+        self.tree.setRootIsDecorated(False)
+        self.tree.setIndentation(8)
         self.tree.itemDoubleClicked.connect(lambda item, _: self._add(item))
-        self.add_button = QPushButton("Add to pipeline")
-        self.add_button.clicked.connect(lambda: self._add(self.tree.currentItem()))
         layout.addWidget(self.filter)
         layout.addWidget(self.tree, 1)
-        layout.addWidget(self.add_button)
+        theme.follow(self, self._recolor)
+
+    def _recolor(self, t: theme.Theme) -> None:
+        self.search_icon.setIcon(icon("search", t.muted))
+        self.set_functions(self.functions)
 
     def set_functions(self, functions: list[dict[str, Any]]) -> None:
+        self.functions = functions
+        t = theme.current()
         self.tree.clear()
         groups: dict[str, QTreeWidgetItem] = {}
-        for function in functions:
+        for function in sorted(functions, key=lambda f: f["name"]):
             category = function.get("category") or "other"
             if function.get("backend") == "gstreamer":
-                category = f"{category} (GStreamer)"
+                category = f"{category} · gstreamer"
             group = groups.get(category)
             if group is None:
-                group = groups[category] = QTreeWidgetItem(self.tree, [category])
+                group = groups[category] = QTreeWidgetItem([category.upper()])
                 group.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                font = QFont(self.font())
+                font.setPointSizeF(font.pointSizeF() - 1.5)
+                font.setWeight(QFont.Weight.DemiBold)
+                group.setFont(0, font)
+                group.setForeground(0, QColor(t.muted))
+                group.setFirstColumnSpanned(True)
             item = QTreeWidgetItem(group, [function["name"], function.get("title", "")])
             item.setData(0, ID_ROLE, function["name"])
-            item.setToolTip(0, function.get("description", ""))
-            item.setToolTip(1, function.get("description", ""))
-        self.tree.sortItems(0, Qt.SortOrder.AscendingOrder)
+            item.setForeground(1, QColor(t.muted))
+            tip = (
+                f"{function.get('title', '')}\n{function.get('description', '')}\n\n"
+                "Double-click to add it to the pipeline."
+            )
+            item.setToolTip(0, tip)
+            item.setToolTip(1, tip)
+        for name in sorted(groups):
+            self.tree.addTopLevelItem(groups[name])
+            groups[name].setFirstColumnSpanned(True)
         self.tree.expandAll()
         self.tree.resizeColumnToContents(0)
         self._apply_filter(self.filter.text())
+
+    def current_name(self) -> str | None:
+        item = self.tree.currentItem()
+        return item.data(0, ID_ROLE) if item else None
 
     def _apply_filter(self, text: str) -> None:
         text = text.lower()
@@ -91,6 +124,38 @@ class FunctionList(QWidget):
             self.on_add(name)
 
 
+class StageDelegate(QStyledItemDelegate):
+    """Draws a stage's timing or error as a badge on the right of its row."""
+
+    def sizeHint(self, option, index) -> QSize:
+        size = super().sizeHint(option, index)
+        return QSize(size.width(), max(size.height(), 30))
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        super().paint(painter, option, index)
+        badge = index.data(BADGE_ROLE)
+        if not badge:
+            return
+        text, kind = badge
+        t = theme.current()
+        color = QColor({"error": t.danger, "off": t.muted}.get(kind, t.muted))
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        font = QFont(option.font)
+        font.setPointSizeF(font.pointSizeF() - 1)
+        painter.setFont(font)
+        width = painter.fontMetrics().horizontalAdvance(text) + 16
+        rect = QRectF(option.rect.right() - width - 6, option.rect.center().y() - 10, width, 20)
+        fill = QColor(color)
+        fill.setAlpha(40)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(fill)
+        painter.drawRoundedRect(rect, 10, 10)
+        painter.setPen(color)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+        painter.restore()
+
+
 class PipelinePanel(QWidget):
     def __init__(self, client: QtAipcClient, parent: QWidget | None = None):
         super().__init__(parent)
@@ -102,51 +167,75 @@ class PipelinePanel(QWidget):
         self._edit_timer = QTimer(self, singleShot=True, interval=EDIT_DELAY_MS)
         self._edit_timer.timeout.connect(self._send_params)
 
+        # Functions.
         self.catalogue = FunctionList(self.add_function)
+        functions_card = Card("Functions")
+        functions_card.add_action(
+            tool_button(
+                "plus",
+                "Add the selected function after the selected stage",
+                lambda: (
+                    self.catalogue.current_name()
+                    and self.add_function(self.catalogue.current_name())
+                ),
+            )
+        )
+        functions_card.body.addWidget(self.catalogue)
 
+        # Pipeline.
         self.list = QListWidget()
+        self.list.setItemDelegate(StageDelegate(self.list))
         self.list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._context_menu)
         self.list.model().rowsMoved.connect(self._rows_moved)
         self.list.itemChanged.connect(self._item_changed)
         self.list.currentItemChanged.connect(lambda *_: self._show_selected())
-        self.text = QLineEdit(placeholderText="gray ! blur ksize=5   (Enter to set)")
+        remove = QAction(self.list)
+        remove.setShortcut(QKeySequence.StandardKey.Delete)
+        remove.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        remove.triggered.connect(self._remove_selected)
+        self.list.addAction(remove)
+        self.empty = QLabel("Empty: frames pass unchanged.\nDouble-click a function to add it.")
+        self.empty.setObjectName("muted")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.text = QLineEdit(placeholderText="gray ! blur ksize=5   (Enter applies)")
+        self.text.setToolTip("The pipeline as text, like scip-cli -p. Edit and press Enter.")
         self.text.returnPressed.connect(
             lambda: self.call("pipeline.set", {"text": self.text.text()})
         )
-        buttons = QHBoxLayout()
-        for label, slot in (
-            ("Up", lambda: self._move_selected(-1)),
-            ("Down", lambda: self._move_selected(+1)),
-            ("Remove", self._remove_selected),
-            ("Clear", lambda: self.call("pipeline.clear")),
+        pipeline_card = Card("Pipeline", "Check to enable · drag to reorder")
+        for name, tip, slot in (
+            ("up", "Move up", lambda: self._move_selected(-1)),
+            ("down", "Move down", lambda: self._move_selected(+1)),
+            ("trash", "Remove the selected stage (Del)", self._remove_selected),
+            ("close", "Remove all stages", lambda: self.call("pipeline.clear")),
+            ("copy", "Copy the pipeline text", self._copy_text),
         ):
-            button = QPushButton(label)
-            button.clicked.connect(slot)
-            buttons.addWidget(button)
-        stages_box = QGroupBox("Pipeline (check = enabled, drag to reorder)")
-        stages_layout = QVBoxLayout(stages_box)
-        stages_layout.addWidget(self.list, 1)
-        stages_layout.addLayout(buttons)
-        stages_layout.addWidget(self.text)
+            pipeline_card.add_action(tool_button(name, tip, slot))
+        pipeline_card.body.addWidget(self.list, 1)
+        pipeline_card.body.addWidget(self.empty)
+        pipeline_card.body.addWidget(self.text)
 
+        # Parameters.
         self.editor = ParamEditor()
         self.editor.changed.connect(self._param_edited)
         editor_scroll = QScrollArea(widgetResizable=True)
         editor_scroll.setWidget(self.editor)
-        editor_box = QGroupBox("Parameters")
-        QVBoxLayout(editor_box).addWidget(editor_scroll)
-
-        functions_box = QGroupBox("Functions on the target")
-        QVBoxLayout(functions_box).addWidget(self.catalogue)
+        editor_card = Card("Parameters")
+        editor_card.body.addWidget(editor_scroll)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.addWidget(functions_box)
-        splitter.addWidget(stages_box)
-        splitter.addWidget(editor_box)
-        splitter.setSizes([250, 200, 250])
+        splitter.setChildrenCollapsible(False)
+        for card in (functions_card, pipeline_card, editor_card):
+            splitter.addWidget(card)
+        splitter.setSizes([300, 240, 300])
+        self.splitter = splitter
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(splitter)
+        self._update_empty()
+        theme.follow(self, lambda _t: self._redecorate())
 
     # --- from the target ----------------------------------------------------
 
@@ -176,6 +265,7 @@ class PipelinePanel(QWidget):
         self.list.blockSignals(False)
         if not self.text.hasFocus():
             self.text.setText(pipeline.get("text", ""))
+        self._update_empty()
         new_ids = [s["id"] for s in self.stages if s["id"] not in previous_ids]
         if len(new_ids) == 1:  # just added: edit it
             self.select(new_ids[0])
@@ -187,8 +277,7 @@ class PipelinePanel(QWidget):
     def update_status(self, stats: dict[str, Any]) -> None:
         """Per-stage timing and errors from event.stats."""
         self.status = {s["id"]: s for s in stats.get("stages", [])}
-        for i in range(self.list.count()):
-            self._decorate(self.list.item(i))
+        self._redecorate()
 
     # --- user actions ---------------------------------------------------------
 
@@ -254,23 +343,56 @@ class PipelinePanel(QWidget):
         if stage_id is not None:
             self.call("pipeline.remove", {"id": stage_id})
 
+    def _copy_text(self) -> None:
+        QGuiApplication.clipboard().setText(self.text.text())
+
+    def _context_menu(self, position) -> None:
+        item = self.list.itemAt(position)
+        if item is None:
+            return
+        stage = self._stage(item.data(ID_ROLE))
+        menu = QMenu(self)
+        toggle = menu.addAction("Disable" if stage["enabled"] else "Enable")
+        menu.addSeparator()
+        up = menu.addAction(icon("up"), "Move up")
+        down = menu.addAction(icon("down"), "Move down")
+        menu.addSeparator()
+        remove = menu.addAction(icon("trash"), "Remove")
+        chosen = menu.exec(self.list.viewport().mapToGlobal(position))
+        if chosen is toggle:
+            self.call("pipeline.update", {"id": stage["id"], "enabled": not stage["enabled"]})
+        elif chosen in (up, down):
+            self.list.setCurrentItem(item)
+            self._move_selected(-1 if chosen is up else 1)
+        elif chosen is remove:
+            self.call("pipeline.remove", {"id": stage["id"]})
+
+    def _update_empty(self) -> None:
+        self.empty.setVisible(self.list.count() == 0)
+
+    def _redecorate(self) -> None:
+        for i in range(self.list.count()):
+            self._decorate(self.list.item(i))
+
     def _decorate(self, item: QListWidgetItem) -> None:
         stage = self._stage(item.data(ID_ROLE))
         if stage is None:
             return
+        t = theme.current()
         status = self.status.get(stage["id"], {})
-        text = stage["text"]
-        if status.get("active"):
-            text += f"    {status.get('mean_ms', 0):.1f} ms"
-        if status.get("error"):
-            text = f"⚠ {text}"
-            item.setForeground(QBrush(QColor("#c62828")))
-            item.setToolTip(f"bypassed: {status['error']}")
-        else:
-            item.setForeground(QBrush())
-            item.setToolTip(self.functions.get(stage["function"], {}).get("description", ""))
-        if not stage["enabled"]:
-            item.setForeground(QBrush(QColor("gray")))
         self.list.blockSignals(True)
-        item.setText(text)
+        item.setText(stage["text"])
+        if not stage["enabled"]:
+            badge = ("off", "off")
+            item.setForeground(QColor(t.muted))
+            item.setToolTip("Disabled: frames pass it unchanged")
+        elif status.get("error"):
+            badge = ("bypassed", "error")
+            item.setForeground(QColor(t.danger))
+            item.setToolTip(f"Bypassed: {status['error']}")
+        else:
+            badge = (f"{status['mean_ms']:.1f} ms", "time") if status.get("active") else None
+            item.setForeground(QColor(t.text))
+            item.setToolTip(self.functions.get(stage["function"], {}).get("description", ""))
+        item.setData(BADGE_ROLE, badge)
         self.list.blockSignals(False)

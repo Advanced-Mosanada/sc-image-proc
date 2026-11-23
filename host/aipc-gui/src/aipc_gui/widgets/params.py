@@ -29,6 +29,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..icons import set_icon
+
 INT_LIMIT = 2**31 - 1
 SLIDER_STEPS = 1000
 
@@ -221,14 +223,29 @@ class ParamEditor(QWidget):
         super().__init__(parent)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(6)
         self.title = QLabel()
+        self.title.setObjectName("cardTitle")
         self.title.setWordWrap(True)
+        self.description = QLabel()
+        self.description.setObjectName("muted")
+        self.description.setWordWrap(True)
         outer.addWidget(self.title)
+        outer.addWidget(self.description)
         self.form = QFormLayout()
+        self.form.setContentsMargins(0, 6, 0, 0)
+        self.form.setHorizontalSpacing(12)
+        self.form.setVerticalSpacing(8)
+        self.form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         outer.addLayout(self.form)
         self.reset = QPushButton("Reset to defaults")
+        self.reset.setObjectName("flat")
+        set_icon(self.reset, "reset", size=16)
         self.reset.clicked.connect(self._reset)
-        outer.addWidget(self.reset)
+        reset_row = QHBoxLayout()
+        reset_row.addStretch()
+        reset_row.addWidget(self.reset)
+        outer.addLayout(reset_row)
         outer.addStretch()
         self.fields: dict[str, Field] = {}
         self.specs: list[dict[str, Any]] = []
@@ -241,13 +258,16 @@ class ParamEditor(QWidget):
         self.fields.clear()
         self.specs = function.get("params", []) if function else []
         if function is None:
-            self.title.setText("<i>Select a stage to edit its parameters.</i>")
+            self.title.setText("No stage selected")
+            self.description.setText("Select a stage in the pipeline to tune its parameters.")
         else:
-            backend = " (GStreamer)" if function.get("backend") == "gstreamer" else ""
-            self.title.setText(
-                f"<b>{function.get('title') or function['name']}</b>{backend}<br>"
-                f"<small>{function.get('description', '')}</small>"
-            )
+            backend = "  \u00b7  GStreamer" if function.get("backend") == "gstreamer" else ""
+            self.title.setText(f"{function.get('title') or function['name']}{backend}")
+            self.description.setText(function.get("description", ""))
+            if not self.specs:
+                self.description.setText(
+                    f"{function.get('description', '')}\n\nThis function has no parameters."
+                )
         for spec in self.specs:
             field = make_field(spec)
             field.set_value(values.get(spec["name"], spec.get("default")))
