@@ -1,0 +1,19 @@
+# Shared settings for the board scripts. Sourced, not executed.
+# Override any of these from the environment, e.g.  SCIP_BOARD=root@10.0.0.5 scripts/deploy.sh
+
+SCIP_BOARD="${SCIP_BOARD:-root@192.168.50.2}"
+SCIP_BOARD_DIR="${SCIP_BOARD_DIR:-/opt/scip}"
+SCIP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+SCIP_SSH=(ssh -o BatchMode=yes -o ConnectTimeout=5 "$SCIP_BOARD")
+
+case "$SCIP_BOARD_DIR" in
+    /opt/?* | /home/?* | /tmp/?*) ;;
+    *) echo "refusing SCIP_BOARD_DIR='$SCIP_BOARD_DIR' (must be below /opt, /home or /tmp)" >&2
+       exit 2 ;;
+esac
+
+# Quote arguments so they survive the remote shell unchanged.
+scip_quote() {
+    printf '%q ' "$@"
+}

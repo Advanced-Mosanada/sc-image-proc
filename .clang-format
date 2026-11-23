@@ -79,7 +79,7 @@ IncludeCategories:
     Priority: 2
   - Regex: '^"'                                         # other local headers
     Priority: 3
-  - Regex: '^<(opencv2|gst|CL|g2d|tensorflow|VX|drm|wayland)'  # third-party / BSP
+  - Regex: '^<(opencv2|gst|CL|g2d|tensorflow|VX|drm|wayland|gtest|gmock|benchmark)/'  # third-party / BSP
     Priority: 4
   - Regex: '^<(linux|sys|arm_neon)'                     # kernel / platform
     Priority: 5
