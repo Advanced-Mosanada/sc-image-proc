@@ -99,3 +99,31 @@ TEST(Devices, ListingIsSane)
         }
     }
 }
+
+TEST(Validation, SourceUris)
+{
+    EXPECT_NO_THROW(scip::io::validateSourceUri("pattern:64x32:gray"));
+    EXPECT_NO_THROW(scip::io::validateSourceUri("rtp://:5000"));
+    EXPECT_NO_THROW(scip::io::validateSourceUri("rtsp://camera/stream"));
+    EXPECT_THROW(scip::io::validateSourceUri(""), std::invalid_argument);
+    EXPECT_THROW(scip::io::validateSourceUri("pattern:big"), std::invalid_argument);
+    EXPECT_THROW(scip::io::validateSourceUri("rtp://:0"), std::invalid_argument);
+    EXPECT_THROW(scip::io::validateSourceUri("camera:/dev/no-such-video"), std::invalid_argument);
+    EXPECT_THROW(scip::io::validateSourceUri("/no/such/clip.mp4"), std::invalid_argument);
+}
+
+TEST(Validation, SinkUris)
+{
+    for (const char* ok : {"display",
+                           "display:40",
+                           "udp:10.0.0.1:5002",
+                           "out.mp4",
+                           "last.png",
+                           "gst:appsrc name=scip_src ! fakesink"}) {
+        EXPECT_NO_THROW(scip::io::validateSinkUri(ok)) << ok;
+    }
+    for (const char* bad :
+         {"screen", "display:hdmi", "udp:host", "udp:host:70000", "out.avi", "gst:fakesink"}) {
+        EXPECT_THROW(scip::io::validateSinkUri(bad), std::invalid_argument) << bad;
+    }
+}

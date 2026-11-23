@@ -88,6 +88,51 @@ bool isStillSource(const std::string& uri)
     return !detail::isVideoPath(uri);
 }
 
+void validateSourceUri(const std::string& uri)
+{
+    if (uri.empty()) {
+        throw std::invalid_argument("empty input");
+    }
+    if (detail::startsWith(uri, "pattern:")) {
+        const auto parts = detail::split(std::string_view(uri).substr(8), ':');
+        detail::parseSize(parts[0], "pattern size");
+        if (parts.size() > 2 || (parts.size() == 2 && parts[1] != "gray")) {
+            throw std::invalid_argument("usage: pattern:WIDTHxHEIGHT[:gray]");
+        }
+        return;
+    }
+    if (detail::startsWith(uri, "camera:")) {
+        const auto parts = detail::split(std::string_view(uri).substr(7), ':');
+        if (parts.empty() || !std::filesystem::exists(std::string(parts[0]))) {
+            throw std::invalid_argument("no such camera: '" + uri.substr(7) + "'");
+        }
+        if (parts.size() == 2) {
+            detail::parseSize(parts[1], "camera size");
+        }
+        return;
+    }
+    if (detail::startsWith(uri, "rtp://")) {
+        const auto colon = uri.rfind(':');
+        const int port = detail::parseInt(std::string_view(uri).substr(colon + 1), "rtp port");
+        if (colon < 6 || port <= 0 || port > 65535) {
+            throw std::invalid_argument("usage: rtp://[ADDRESS]:PORT, e.g. rtp://:5000");
+        }
+        return;
+    }
+    if (detail::startsWith(uri, "gst:")) {
+        if (uri.find("scip_sink") == std::string::npos) {
+            throw std::invalid_argument("gst: inputs must end with 'appsink name=scip_sink'");
+        }
+        return;
+    }
+    if (uri.find("://") != std::string::npos) {
+        return;  // network URIs are checked when opened
+    }
+    if (!std::filesystem::exists(uri)) {
+        throw std::invalid_argument("no such file: '" + uri + "'");
+    }
+}
+
 FrameSourcePtr openSource(const std::string& uri, const SourceOptions& options)
 {
     constexpr std::string_view kPattern = "pattern:";

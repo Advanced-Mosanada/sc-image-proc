@@ -46,6 +46,10 @@ struct SourceOptions {
 /// first frame (see FrameSource::info()).
 FrameSourcePtr openSource(const std::string& uri, const SourceOptions& options);
 
+/// Check an input URI without opening it (syntax, file / device exists).
+/// Throws std::invalid_argument with a helpful message.
+void validateSourceUri(const std::string& uri);
+
 /// True for sources that repeat a still image (pattern:, image files): they never
 /// end on their own, so a frame count must be given.
 bool isStillSource(const std::string& uri);
@@ -59,6 +63,9 @@ bool isStillSource(const std::string& uri);
 ///   <image file>                  .png/.jpg/...: the LAST frame is written on close
 ///   gst:<launch line>             any pipeline starting with `appsrc name=scip_src`
 FrameSinkPtr openSink(const std::string& uri, const FrameInfo& info, double fps);
+
+/// Check an output URI without opening it. Throws std::invalid_argument.
+void validateSinkUri(const std::string& uri);
 
 /// For a udp: sink, the gst-launch command that shows the stream on a PC. Empty otherwise.
 std::string viewerHint(const std::string& sinkUri);
