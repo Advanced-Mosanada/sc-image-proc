@@ -145,6 +145,10 @@ Json outputSchemes()
     return schemes;
 }
 
+/// When the process started (static initialisation runs before main()).
+const double kProcessStart =
+    std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+
 }  // namespace
 
 std::string hostName()
@@ -158,8 +162,6 @@ std::string hostName()
 
 Json systemInfo(const Identity& identity)
 {
-    static const double started =
-        std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
     const build::Info& build = build::info();
 
     utsname uts{};
@@ -181,7 +183,7 @@ Json systemInfo(const Identity& identity)
              {"compiler", build.compiler},
              {"target_cpu", build.targetCpu},
              {"pid", static_cast<std::int64_t>(::getpid())},
-             {"started", started},
+             {"started", kProcessStart},
          }},
         {"device",
          {

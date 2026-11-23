@@ -66,7 +66,7 @@ Standard JSON-RPC 2.0.
 **Error response**:
 
 ```json
-{"jsonrpc": "2.0", "id": 7, "error": {"code": -32000, "message": "blur: ksize: 4 is not 3 + n * 2"}}
+{"jsonrpc": "2.0", "id": 7, "error": {"code": -32000, "message": "blur: parameter 'ksize': 4 is not 3 + n * 2"}}
 ```
 
 `message` is meant for humans: show it to the user as it is.
@@ -463,7 +463,7 @@ drop.
 --> {"jsonrpc":"2.0","id":6,"method":"pipeline.set","params":{"text":"gray ! blur ksize=5"}}
 <-- {"jsonrpc":"2.0","id":6,"result":{"stages":[{"id":1,...},{"id":2,...}],"text":"gray ! blur ksize=5"}}
 --> {"jsonrpc":"2.0","id":7,"method":"pipeline.update","params":{"id":2,"params":{"ksize":4}}}
-<-- {"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"blur: ksize: 4 is not 3 + n * 2"}}
+<-- {"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"blur: parameter 'ksize': 4 is not 3 + n * 2"}}
 <-- {"jsonrpc":"2.0","method":"event.stats","params":{"state":"running","fps":29.9, ...}}
 ```
 
