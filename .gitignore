@@ -1,0 +1,97 @@
+# ---------------------------------------------------------------------------
+# Build output (all presets build out-of-source under build/)
+# ---------------------------------------------------------------------------
+build/
+out/
+install/
+stage/
+cmake-build-*/
+
+# Stray in-source CMake artifacts (if someone runs `cmake .` by mistake)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+Testing/
+_deps/
+
+# Personal, machine-specific preset overrides (CMakePresets.json IS committed)
+CMakeUserPresets.json
+
+# Compilation database: generated per build dir; symlink it locally if needed
+compile_commands.json
+
+# ---------------------------------------------------------------------------
+# Compiled objects and binaries
+# ---------------------------------------------------------------------------
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.d
+*.gch
+*.pch
+*.out
+*.elf
+
+# ---------------------------------------------------------------------------
+# Large / generated data — keep only small golden test images in git
+# ---------------------------------------------------------------------------
+data/large/
+data/downloads/
+results/
+*.raw
+*.yuv
+*.nv12
+*.mp4
+*.mkv
+*.h264
+*.h265
+*.tflite
+
+# Profiling and benchmark outputs
+perf.data
+perf.data.old
+*.perf
+callgrind.out.*
+massif.out.*
+gmon.out
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+bench-results*/
+
+# Core dumps
+core
+core.*
+vgcore.*
+
+# ---------------------------------------------------------------------------
+# Python helpers (scripts/, model conversion)
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---------------------------------------------------------------------------
+# Editors / IDEs / tools
+# ---------------------------------------------------------------------------
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.cache/
+.clangd/
+.DS_Store
+
+# Local environment and secrets (board IP, passwords, tokens)
+.env
+*.local

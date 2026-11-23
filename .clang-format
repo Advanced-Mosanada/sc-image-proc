@@ -1,0 +1,90 @@
+# C++ style for sc-image-proc.
+# Base: LLVM, adjusted for readability of image-processing code.
+# Requires clang-format >= 14 (host has 18).
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++17                 # the board SDK compiler is GCC 10.2: we target C++17
+
+# Layout
+ColumnLimit: 100
+IndentWidth: 4
+ContinuationIndentWidth: 4
+UseTab: Never
+AccessModifierOffset: -4
+IndentCaseLabels: true
+NamespaceIndentation: None
+FixNamespaceComments: true
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+InsertNewlineAtEOF: true
+
+# Braces: attached everywhere except function bodies (easier to scan)
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterClass: false
+  AfterStruct: false
+  AfterEnum: false
+  AfterNamespace: false
+  AfterControlStatement: Never
+  BeforeElse: false
+  BeforeCatch: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+InsertBraces: true              # always brace if/for/while bodies
+
+# Short forms
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Empty
+AllowShortLambdasOnASingleLine: All
+AllowShortEnumsOnASingleLine: false
+
+# Pointers, references, templates
+PointerAlignment: Left          # uint8_t* row, const Frame& f
+ReferenceAlignment: Pointer
+AlwaysBreakTemplateDeclarations: Yes
+SpaceAfterTemplateKeyword: true
+
+# Arguments / parameters
+AlignAfterOpenBracket: Align
+BinPackArguments: false
+BinPackParameters: false
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+BreakConstructorInitializers: BeforeComma
+PackConstructorInitializers: NextLine
+BreakInheritanceList: BeforeComma
+
+# Alignment (keeps kernel coefficient tables and struct fields readable)
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: None
+AlignConsecutiveMacros: Consecutive
+AlignTrailingComments: true
+AlignOperands: Align
+AlignEscapedNewlines: Left
+Cpp11BracedListStyle: true
+
+# Comments
+ReflowComments: true
+SpacesBeforeTrailingComments: 2
+
+# Includes: own header, then project, then third-party, then system/STL
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^"scip/'                                    # project public headers
+    Priority: 2
+  - Regex: '^"'                                         # other local headers
+    Priority: 3
+  - Regex: '^<(opencv2|gst|CL|g2d|tensorflow|VX|drm|wayland)'  # third-party / BSP
+    Priority: 4
+  - Regex: '^<(linux|sys|arm_neon)'                     # kernel / platform
+    Priority: 5
+  - Regex: '^<'                                         # C++ standard library
+    Priority: 6
+IncludeIsMainRegex: '(_test|_bench)?$'
+SortUsingDeclarations: LexicographicNumeric
+...
