@@ -18,7 +18,11 @@ aipc-gui = "aipc_gui.app:main"
 aipc = "aipc_gui.protocol:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = [
+    "pytest>=8",
+    "pytest-qt>=4.5.0",
+    "ruff>=0.6",
+]
 
 [build-system]
 requires = ["hatchling"]
