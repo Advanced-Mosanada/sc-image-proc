@@ -56,6 +56,30 @@
       "inherits": "imx8mp-base",
       "displayName": "i.MX 8M Plus - Release + debug symbols (perf)",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "rk3588-base",
+      "hidden": true,
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/rk3588-debian12.cmake"
+    },
+    {
+      "name": "rk3588-debug",
+      "inherits": "rk3588-base",
+      "displayName": "RK3588 (ROCK 5B+) - Debug (gdbserver)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "rk3588-release",
+      "inherits": "rk3588-base",
+      "displayName": "RK3588 (ROCK 5B+) - Release (benchmarks)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "rk3588-relwithdebinfo",
+      "inherits": "rk3588-base",
+      "displayName": "RK3588 (ROCK 5B+) - Release + debug symbols (perf)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
     }
   ],
   "buildPresets": [
@@ -64,7 +88,10 @@
     { "name": "host-release", "configurePreset": "host-release" },
     { "name": "imx8mp-debug", "configurePreset": "imx8mp-debug" },
     { "name": "imx8mp-release", "configurePreset": "imx8mp-release" },
-    { "name": "imx8mp-relwithdebinfo", "configurePreset": "imx8mp-relwithdebinfo" }
+    { "name": "imx8mp-relwithdebinfo", "configurePreset": "imx8mp-relwithdebinfo" },
+    { "name": "rk3588-debug", "configurePreset": "rk3588-debug" },
+    { "name": "rk3588-release", "configurePreset": "rk3588-release" },
+    { "name": "rk3588-relwithdebinfo", "configurePreset": "rk3588-relwithdebinfo" }
   ],
   "testPresets": [
     {
@@ -80,6 +107,12 @@
       "inherits": "base",
       "displayName": "i.MX 8M Plus - Release, run on the PC through QEMU",
       "configurePreset": "imx8mp-release"
+    },
+    {
+      "name": "rk3588-release",
+      "inherits": "base",
+      "displayName": "RK3588 (ROCK 5B+) - Release, run on the PC through QEMU",
+      "configurePreset": "rk3588-release"
     }
   ],
   "workflowPresets": [
@@ -99,6 +132,15 @@
         { "type": "configure", "name": "imx8mp-release" },
         { "type": "build", "name": "imx8mp-release" },
         { "type": "test", "name": "imx8mp-release" }
+      ]
+    },
+    {
+      "name": "rk3588-check",
+      "displayName": "Cross-build for the ROCK 5B+ and test under QEMU",
+      "steps": [
+        { "type": "configure", "name": "rk3588-release" },
+        { "type": "build", "name": "rk3588-release" },
+        { "type": "test", "name": "rk3588-release" }
       ]
     }
   ]

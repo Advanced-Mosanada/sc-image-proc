@@ -1,7 +1,8 @@
 # sc-image-proc (scip)
 
 An image processing pipeline that is developed and tested on a Linux PC and
-deployed to an NXP i.MX 8M Plus board (MYiR MYD-JX8MP) for performance work.
+deployed to an NXP i.MX 8M Plus board (MYiR MYD-JX8MP) or a Radxa ROCK 5B+
+(Rockchip RK3588) for performance work.
 
 The same source builds for both targets; only the CMake preset changes.
 
@@ -45,9 +46,9 @@ apps/
   scipd/               the target daemon, controlled over AIPC
 host/aipc-gui/         host GUI and `aipc` command (Python, PySide6, uv)
 tests/                 GoogleTest unit tests + CLI smoke tests
-cmake/                 warnings, sanitizers, build info, board toolchain file
+cmake/                 warnings, sanitizers, build info, board toolchain files
 scripts/               deploy / run / test on the board
-docs/                  board facts, the AIPC protocol
+docs/                  board facts (board.md: i.MX, board-rock5bplus.md: RK3588), the AIPC protocol
 ```
 
 Library dependencies only point downwards:
@@ -67,6 +68,10 @@ Board: the Yocto SDK that matches the board image, installed at
 `/mnt/ambat/work/sc_display/sdk` (override with `SCIP_SDK_DIR`). The SDK
 does not need to be sourced; `cmake/toolchains/imx8mp-myir-sdk.cmake` uses it directly.
 
+ROCK 5B+ (RK3588): `g++-12-aarch64-linux-gnu` on the PC and a sysroot copied
+from the board with `scripts/rk3588-sysroot.sh` (to `~/sysroots/rock5bplus-debian12`,
+override with `SCIP_SYSROOT_DIR`); see [docs/board-rock5bplus.md](docs/board-rock5bplus.md).
+
 ## Build and test
 
 | Preset | What |
@@ -77,10 +82,12 @@ does not need to be sourced; `cmake/toolchains/imx8mp-myir-sdk.cmake` uses it di
 | `imx8mp-release` | board, `-O3`, for benchmarks |
 | `imx8mp-relwithdebinfo` | board, optimised + symbols, for `perf` |
 | `imx8mp-debug` | board, for `gdbserver` |
+| `rk3588-release` / `-relwithdebinfo` / `-debug` | the same for the ROCK 5B+ |
 
 ```bash
 cmake --workflow --preset host-check      # configure + build + test on the PC
 cmake --workflow --preset imx8mp-check    # cross-build + test under QEMU
+cmake --workflow --preset rk3588-check    # the same for the ROCK 5B+
 ```
 
 Or step by step:
@@ -105,6 +112,16 @@ scripts/board-run.sh scip-cli -i pattern:1920x1080 -p 'gray ! blur ksize=5' -n 2
 
 Board address and folder: `SCIP_BOARD` (default `root@192.168.50.2`) and
 `SCIP_BOARD_DIR` (default `/opt/scip`).
+
+The ROCK 5B+ is selected with `SCIP_TARGET=rk3588` (for `deploy.sh`, an
+`rk3588-*` preset is enough). Defaults: `radxa@192.168.2.2` (direct cable), `/home/radxa/scip`:
+
+```bash
+scripts/rk3588-sysroot.sh               # once, and after upgrading packages on the board
+scripts/deploy.sh rk3588-release
+SCIP_TARGET=rk3588 scripts/board-test.sh
+SCIP_TARGET=rk3588 scripts/board-run.sh scip-cli -i pattern:1920x1080 -p 'gray ! blur ksize=5' -n 200
+```
 
 ### Benchmarking notes
 
@@ -196,8 +213,22 @@ parameters, outputs.
 
 ```bash
 build/host-debug/apps/scipd                     # on the PC
-scripts/deploy.sh && scripts/board-run.sh scipd --name board-1   # on the board
+scripts/deploy.sh && scripts/board-run.sh scipd --name board-1   # on the board, until Ctrl+C
 ```
+
+To leave it running on the board in the background (after the terminal closes,
+not across a reboot):
+
+```bash
+scripts/deploy.sh rk3588-release                      # 1. build and copy to the board
+SCIP_TARGET=rk3588 scripts/board-scipd.sh start       # 2. start scipd there
+cd host/aipc-gui && uv run aipc-gui                   # 3. the GUI lists it; or connect to 192.168.2.2:5600
+```
+
+`board-scipd.sh` also takes `stop`, `restart`, `status` and `log`; extra
+arguments after `start` go to scipd (e.g. `--name lab-board`). Without
+`SCIP_TARGET` it uses the i.MX board. `deploy.sh` stops a running scipd, so
+start it again after each deploy.
 
 The GUI finds targets on the LAN (see [host/aipc-gui](host/aipc-gui) for setup):
 

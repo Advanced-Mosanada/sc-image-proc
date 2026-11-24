@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Copy files (videos, images) to the board.
 #
-#   scripts/board-copy.sh ~/videos/*.mp4             # -> /home/root/videos/
+#   scripts/board-copy.sh ~/videos/*.mp4             # -> /home/root/videos/ (i.MX)
+#   SCIP_TARGET=rk3588 scripts/board-copy.sh x.mp4    # -> /home/radxa/videos/ (ROCK 5B+)
 #   SCIP_BOARD_DATA=/tmp scripts/board-copy.sh x.mp4  # /tmp is RAM on the board: fast, not kept
 #
 # The board's root filesystem is NFS from the PC, so /home/root/videos lives on the
@@ -9,7 +10,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/board-env.sh"
 
-dest="${SCIP_BOARD_DATA:-/home/root/videos}"
+dest="${SCIP_BOARD_DATA:-$SCIP_BOARD_DATA_DEFAULT}"
 if [[ $# -eq 0 ]]; then
     echo "usage: $0 <file>... (destination: $dest, override with SCIP_BOARD_DATA)" >&2
     exit 2
