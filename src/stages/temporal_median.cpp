@@ -1,3 +1,4 @@
+#include "common.hpp"
 #include "scip/cv.hpp"
 #include "scip/registry.hpp"
 
@@ -21,27 +22,42 @@ namespace {
 /// which OpenCV vectorises.
 class TemporalMedian final : public Stage {
 public:
-    explicit TemporalMedian(int frames) : history_(std::size_t(frames)), work_(std::size_t(frames))
+    TemporalMedian(int frames, bool skipRepeats)
+        : history_(std::size_t(frames)), work_(std::size_t(frames)), skipRepeats_(skipRepeats)
     {}
 
     FrameInfo configure(const FrameInfo& input) override
     {
         stored_ = 0;
         next_ = 0;
+        repeats_.reset();
         return input;
     }
 
     void process(const Frame& in, Frame& out) override
     {
         const cv::Mat src = asMat(in);
+        cv::Mat dst = asMat(out);
+        if (skipRepeats_ && repeats_.isRepeat(src) && stored_ > 0 && lastOut_.size() == src.size()) {
+            lastOut_.copyTo(dst);  // a repeat is not a new sample: [A, A, B] would give A
+            return;
+        }
         src.copyTo(history_[next_]);
         next_ = (next_ + 1) % history_.size();
         stored_ = std::min(stored_ + 1, history_.size());
-        cv::Mat dst = asMat(out);
         if (stored_ < history_.size()) {
             src.copyTo(dst);  // not enough history yet
-            return;
+        } else {
+            median(dst);
         }
+        if (skipRepeats_) {
+            dst.copyTo(lastOut_);
+        }
+    }
+
+private:
+    void median(cv::Mat& dst)
+    {
         for (std::size_t i = 0; i < history_.size(); ++i) {
             history_[i].copyTo(work_[i]);
         }
@@ -63,7 +79,6 @@ public:
         }
     }
 
-private:
     /// Compare-exchange of two whole images: a = min, b = max, per pixel.
     void sort(std::size_t a, std::size_t b)
     {
@@ -75,6 +90,9 @@ private:
     std::vector<cv::Mat> history_;
     std::vector<cv::Mat> work_;
     cv::Mat scratch_;
+    cv::Mat lastOut_;
+    bool skipRepeats_;
+    RepeatDetector repeats_;
     std::size_t stored_ = 0;
     std::size_t next_ = 0;
 };
@@ -88,9 +106,11 @@ StageInfo makeInfo()
     info.category = "temporal";
     info.params = {
         param::choice("frames", "Frames in the window", "3", {"3", "5"}),
+        param::boolean("skip_repeats", "An exact repeat of the last frame gives the last output", false),
     };
     info.create = [](const ParamMap& p) {
-        return std::make_unique<TemporalMedian>(std::stoi(getString(p, "frames")));
+        return std::make_unique<TemporalMedian>(std::stoi(getString(p, "frames")),
+                                                getBool(p, "skip_repeats"));
     };
     return info;
 }

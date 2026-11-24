@@ -99,6 +99,7 @@ const char* const kNewFunctions[] = {
     "sharpen",
     "temporal_median",
     "detail",
+    "dde",
 };
 
 }  // namespace
@@ -344,6 +345,96 @@ TEST(Temporal, TnrRemovesNoiseButFollowsMotion)
     EXPECT_EQ(cv::norm(scip::asMat(next(*stage, moved)), scip::asMat(moved), cv::NORM_INF), 0.0);
 }
 
+TEST(Temporal, TnrReachesSmallChanges)
+{
+    // An 8-bit history rounded every blend away: with strength 0.8 the output
+    // stayed at 100 for ever when the scene went to 102.
+    const FrameInfo info{16, 8, PixelFormat::Gray8};
+    auto stage = make("tnr strength=0.8 noise=10");
+    run(*stage, uniform(info, 100));
+    cv::Mat out;
+    for (int i = 0; i < 40; ++i) {
+        out = scip::asMat(next(*stage, uniform(info, 102))).clone();
+    }
+    EXPECT_EQ(mean(out), 102.0);
+}
+
+namespace {
+
+/// A textured scene seen through a camera that pans `step` pixels per frame
+/// to the right, plus fresh noise of `sigma` in every frame.
+Frame panned(const cv::Mat& scene, int frame, int step, double sigma, int seed)
+{
+    const cv::Rect view(frame * step, 0, 192, 128);
+    Frame out(FrameInfo{view.width, view.height, PixelFormat::Gray8});
+    cv::Mat noise(view.size(), CV_32F);
+    cv::RNG rng(static_cast<std::uint64_t>(seed));
+    rng.fill(noise, cv::RNG::NORMAL, 0.0, sigma);
+    cv::Mat sum;
+    scene(view).convertTo(sum, CV_32F);
+    sum += noise;
+    sum.convertTo(scip::asMat(out), CV_8U);
+    return out;
+}
+
+}  // namespace
+
+TEST(Temporal, TnrAlignFollowsAPanningCamera)
+{
+    cv::Mat scene(128, 192 + 30 * 4, CV_8U);
+    cv::RNG(5).fill(scene, cv::RNG::UNIFORM, 0, 256);
+    cv::GaussianBlur(scene, scene, cv::Size(), 4.0);  // structures of ~10 px, as in real scenes
+    cv::normalize(scene, scene, 30, 220, cv::NORM_MINMAX);
+    const double sigma = 4.0;
+    for (const bool align : {false, true}) {
+        auto stage = make(std::string("tnr window=3 noise=6 align=") + (align ? "true" : "false"));
+        run(*stage, panned(scene, 0, 4, sigma, 1000));
+        double error = 0.0;
+        for (int i = 1; i < 30; ++i) {
+            const Frame out = next(*stage, panned(scene, i, 4, sigma, 1000 + i));
+            if (i == 29) {
+                cv::Mat clean;
+                scene(cv::Rect(i * 4, 0, 192, 128)).convertTo(clean, CV_32F);
+                cv::Mat result;
+                scip::asMat(out).convertTo(result, CV_32F);
+                const cv::Mat error32 = result - clean;
+                error = deviation(error32(cv::Rect(8, 8, 160, 112)));  // away from the new edge
+            }
+        }
+        if (align) {
+            EXPECT_LT(error, sigma * 0.6) << "aligned: averaged although the scene moves";
+        } else {
+            EXPECT_GT(error, sigma * 0.6) << "not aligned: motion, so nothing is averaged";
+        }
+    }
+}
+
+TEST(Temporal, RepeatedFramesAreNotNewSamples)
+{
+    const FrameInfo info{16, 8, PixelFormat::Gray8};
+    // Without skip_repeats the median of [200, 200(repeat), 12] is the repeat.
+    auto plain = make("temporal_median frames=3");
+    run(*plain, uniform(info, 10));
+    next(*plain, uniform(info, 200));
+    next(*plain, uniform(info, 200));
+    EXPECT_EQ(mean(scip::asMat(next(*plain, uniform(info, 12)))), 200.0);
+
+    auto skip = make("temporal_median frames=3 skip_repeats=true");
+    run(*skip, uniform(info, 10));
+    next(*skip, uniform(info, 200));
+    EXPECT_EQ(mean(scip::asMat(next(*skip, uniform(info, 200)))), 200.0);  // the last output again
+    EXPECT_EQ(mean(scip::asMat(next(*skip, uniform(info, 12)))), 12.0);    // median(10, 200, 12)
+
+    // The recursive filters give exactly the previous output for a repeat.
+    for (const char* name : {"tnr skip_repeats=true", "temporal_mean skip_repeats=true"}) {
+        auto stage = make(name);
+        run(*stage, noisy(info, 100, 3.0, 1));
+        const Frame b = noisy(info, 101, 3.0, 2);
+        const cv::Mat first = scip::asMat(next(*stage, b)).clone();
+        EXPECT_EQ(cv::norm(scip::asMat(next(*stage, b)), first, cv::NORM_INF), 0.0) << name;
+    }
+}
+
 // --- sharpening -----------------------------------------------------------------
 
 TEST(Sharpen, UnsharpMatchesTheFormulaAndRespectsTheThreshold)
@@ -375,6 +466,75 @@ TEST(Sharpen, EdgesGetSteeperFlatAreasStay)
         EXPECT_EQ(out.row(5)[2], 100) << sharpener;   // flat areas unchanged
         EXPECT_EQ(out.row(5)[37], 150) << sharpener;
     }
+}
+
+TEST(Contrast, DdeNeutralSettingsChangeNothing)
+{
+    for (const PixelFormat format : {PixelFormat::Gray8, PixelFormat::Bgr8}) {
+        const Frame input = noisy(FrameInfo{41, 33, format}, 120, 20.0, 11);
+        const Frame out = run(*make("dde gain=1 fine_gain=1 noise=0 contrast=0"), input);
+        // Gray: the layers add up to the input exactly; colour: YCrCb round trip.
+        EXPECT_LE(cv::norm(scip::asMat(out), scip::asMat(input), cv::NORM_INF),
+                  format == PixelFormat::Gray8 ? 0.0 : 2.0);
+    }
+}
+
+TEST(Contrast, DdeSmoothsNoiseAndKeepsStrongEdgesWithoutHalos)
+{
+    // Flat area with noise below the `noise` level: comes out smoother.
+    const Frame flat = noisy(FrameInfo{64, 48, PixelFormat::Gray8}, 120, 2.0, 12);
+    const Frame calm = run(*make("dde contrast=0 gain=2 noise=4"), flat);
+    EXPECT_LT(deviation(scip::asMat(calm)), deviation(scip::asMat(flat)) * 0.7);
+
+    // A strong edge (150 levels, far above sqrt(eps)*255 = 25) is not boosted:
+    // little ring, where the same boost from unsharp overshoots by ~40 levels.
+    const Frame edge = step(FrameInfo{64, 16, PixelFormat::Gray8}, 50, 200);
+    const auto ring = [&](const char* text) {
+        double low = 0.0;
+        double high = 0.0;
+        cv::minMaxLoc(scip::asMat(run(*make(text), edge)).row(8), &low, &high);
+        return std::max(50.0 - low, high - 200.0);
+    };
+    EXPECT_LE(ring("dde contrast=0 gain=3 fine_gain=2 noise=0 eps=0.01"), 150 * 0.1);
+    EXPECT_GT(ring("unsharp amount=1 sigma=1"), 150 * 0.2);
+}
+
+TEST(Contrast, DdeLocalContrastLikeClaheWithoutBanding)
+{
+    // A slow gradient (a dark sky): 8 levels over 128 pixels, plus a bright
+    // object so that the gradient's levels are a small part of the histogram.
+    const FrameInfo info{128, 64, PixelFormat::Gray8};
+    Frame frame(info);
+    cv::Mat view = scip::asMat(frame);
+    for (int x = 0; x < info.width; ++x) {
+        view.col(x).setTo(cv::Scalar(20 + x / 16));
+    }
+    view(cv::Rect(96, 40, 32, 24)).setTo(cv::Scalar(200));
+    const cv::Mat row = view.row(10);  // inside the gradient
+
+    // cv::CLAHE stretches each 1-level step into a big one: visible bands.
+    cv::Mat clahe;
+    cv::createCLAHE(3.0, cv::Size(2, 2))->apply(view, clahe);
+    cv::Mat steps;
+    cv::absdiff(clahe.row(10).colRange(1, 96), clahe.row(10).colRange(0, 95), steps);
+    double claheStep = 0.0;
+    cv::minMaxLoc(steps, nullptr, &claheStep);
+
+    // dde (radius 8 averages the gradient's steps into a ramp) applies the same
+    // contrast to the unrounded base: as much contrast, in small steps.
+    const Frame out = run(*make("dde radius=8 eps=0.01 contrast=1 clip=3 tiles=2 gain=1 fine_gain=1 "
+                                "noise=8"),
+                          frame);
+    const cv::Mat result = scip::asMat(out).row(10);
+    cv::absdiff(result.colRange(1, 96), result.colRange(0, 95), steps);
+    double ddeStep = 0.0;
+    cv::minMaxLoc(steps, nullptr, &ddeStep);
+    const double claheRange = clahe.at<std::uint8_t>(10, 90) - clahe.at<std::uint8_t>(10, 4);
+    const double ddeRange = result.at<std::uint8_t>(90) - result.at<std::uint8_t>(4);
+    EXPECT_GE(claheStep, 4.0) << "the banding this guards against";
+    EXPECT_LE(ddeStep, 2.0);
+    EXPECT_GT(ddeRange, 0.6 * claheRange) << "contrast raised like CLAHE's";
+    EXPECT_GT(ddeRange, 1.3 * (row.at<std::uint8_t>(90) - row.at<std::uint8_t>(4))) << "raised";
 }
 
 TEST(Sharpen, DetailWithGainOneChangesNothing)

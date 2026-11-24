@@ -1,0 +1,17 @@
+# The final comparison (docs/thermal-enhancement.md). python3 search.py candidates.txt
+# baselines
+none
+clahe
+clahe clip=1.5 tiles=4
+temporal_median frames=3 ! clahe
+guided radius=4 eps=0.0005 ! clahe clip=3 tiles=8
+# best chain of the functions that existed before (no dde)
+tnr window=3 noise=4 align=true skip_repeats=true ! guided radius=3 eps=0.002 ! clahe clip=1.5 tiles=4 ! detail gain=1.8 radius=8 eps=0.01
+# recommended
+tnr window=3 noise=4 align=true skip_repeats=true ! guided radius=4 eps=0.00025 ! dde radius=4 eps=0.01 contrast=1 clip=3 tiles=8 gain=3.5 fine_gain=1.6 noise=3
+# the same without camera alignment (cheaper)
+tnr window=3 noise=4 skip_repeats=true ! guided radius=4 eps=0.00025 ! dde radius=4 eps=0.01 contrast=1 clip=3 tiles=8 gain=3.5 fine_gain=1.6 noise=3
+# more detail (at the clipping / banding limits)
+tnr window=3 noise=4 align=true skip_repeats=true ! guided radius=4 eps=0.00025 ! dde radius=4 eps=0.01 contrast=1 clip=3 tiles=8 gain=3.5 fine_gain=2.0 noise=3
+# less noise, less detail
+tnr window=3 noise=4 align=true skip_repeats=true ! guided radius=4 eps=0.0005 ! dde radius=4 eps=0.01 contrast=1 clip=3 tiles=8 gain=3 fine_gain=1.6 noise=3

@@ -10,6 +10,7 @@ add_library(scip_stages OBJECT
     # contrast
     autolevels.cpp
     clahe.cpp
+    dde.cpp
     equalize.cpp
     levels.cpp
     retinex.cpp

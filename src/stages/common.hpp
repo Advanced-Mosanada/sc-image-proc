@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <utility>
 
 namespace scip::stages {
@@ -124,9 +125,50 @@ public:
         }
     }
 
+    /// The `a` of the last apply() (CV_32F, full size, one value per channel):
+    /// ~1 at edges stronger than ~sqrt(eps)*255, ~0 in flat areas. Valid
+    /// until the next apply(); with gain != 0 it is the gain-adjusted a.
+    const cv::Mat& coefficient() const { return aFull_; }
+
+    /// The `b` of the last apply(): a * I + b is the filtered image before it
+    /// is rounded to 8 bits (for callers that need its full precision).
+    const cv::Mat& offset() const { return bFull_; }
+
 private:
     cv::Mat small8_, guide_, mean_, square_, meanSquare_, variance_, denominator_, a_, b_;
     cv::Mat aFull_, bFull_;
+};
+
+/// Recognises a frame that is an exact copy of the previous input. Video
+/// converted to a higher frame rate (e.g. 15 -> 25 fps) repeats frames, and so
+/// does a stalled source. A temporal filter must not take a repeat as a new
+/// observation: a temporal median of [A, A, B] returns A, removing nothing,
+/// and a recursive average counts the same noise twice.
+///
+/// Cost: one copy of the frame per call; a repeat costs one compare.
+class RepeatDetector {
+public:
+    /// True when `frame` equals the previous call's frame (never for the first).
+    bool isRepeat(const cv::Mat& frame)
+    {
+        if (!last_.empty() && last_.size() == frame.size() && last_.type() == frame.type()) {
+            const std::size_t rowBytes = frame.cols * frame.elemSize();
+            bool same = true;
+            for (int y = 0; y < frame.rows && same; ++y) {
+                same = std::memcmp(frame.ptr(y), last_.ptr(y), rowBytes) == 0;
+            }
+            if (same) {
+                return true;
+            }
+        }
+        frame.copyTo(last_);
+        return false;
+    }
+
+    void reset() { last_.release(); }
+
+private:
+    cv::Mat last_;
 };
 
 /// A 256-entry lookup table, filled by `f(v)` for v = 0..255 (clamped to 0..255).

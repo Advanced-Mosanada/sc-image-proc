@@ -1,0 +1,7 @@
+# python3 compare.py final.txt: the 3rd line is the reference of the paired differences
+none
+clahe
+tnr window=3 noise=4 align=true skip_repeats=true ! guided radius=4 eps=0.00025 ! dde radius=4 eps=0.01 contrast=1 clip=3 tiles=8 gain=3.5 fine_gain=1.6 noise=3
+tnr window=3 noise=4 align=true skip_repeats=true ! guided radius=3 eps=0.002 ! clahe clip=1.5 tiles=4 ! detail gain=1.8 radius=8 eps=0.01
+tnr window=3 noise=4 skip_repeats=true ! guided radius=4 eps=0.00025 ! dde radius=4 eps=0.01 contrast=1 clip=3 tiles=8 gain=3.5 fine_gain=1.6 noise=3
+tnr window=3 noise=4 align=true skip_repeats=true ! guided radius=4 eps=0.0005 ! dde radius=4 eps=0.01 contrast=1 clip=3 tiles=8 gain=3 fine_gain=1.6 noise=3

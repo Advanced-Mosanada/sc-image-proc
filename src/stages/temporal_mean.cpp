@@ -1,3 +1,4 @@
+#include "common.hpp"
 #include "scip/cv.hpp"
 #include "scip/registry.hpp"
 
@@ -14,21 +15,23 @@ namespace {
 /// anything that moves leaves a trail (see `tnr` for a motion-aware version).
 class TemporalMean final : public Stage {
 public:
-    explicit TemporalMean(double alpha) : alpha_(alpha) {}
+    TemporalMean(double alpha, bool skipRepeats) : alpha_(alpha), skipRepeats_(skipRepeats) {}
 
     FrameInfo configure(const FrameInfo& input) override
     {
         first_ = true;  // history restarts with a new stream or pipeline
+        repeats_.reset();
         return input;
     }
 
     void process(const Frame& in, Frame& out) override
     {
         const cv::Mat src = asMat(in);
+        const bool repeat = skipRepeats_ && repeats_.isRepeat(src);
         if (first_) {
             src.convertTo(average_, CV_32F);
             first_ = false;
-        } else {
+        } else if (!repeat) {  // a repeat is not a new sample: the average stays
             cv::accumulateWeighted(src, average_, alpha_);
         }
         cv::Mat dst = asMat(out);
@@ -37,7 +40,9 @@ public:
 
 private:
     double alpha_;
+    bool skipRepeats_;
     bool first_ = true;
+    RepeatDetector repeats_;
     cv::Mat average_;  // CV_32F: 8-bit would lose the small steps
 };
 
@@ -51,9 +56,10 @@ StageInfo makeInfo()
     info.params = {
         param::number(
             "alpha", "Weight of the new frame (smaller = more smoothing)", 0.25, 0.02, 1.0, 0.01),
+        param::boolean("skip_repeats", "An exact repeat of the last frame gives the last output", false),
     };
     info.create = [](const ParamMap& p) {
-        return std::make_unique<TemporalMean>(getFloat(p, "alpha"));
+        return std::make_unique<TemporalMean>(getFloat(p, "alpha"), getBool(p, "skip_repeats"));
     };
     return info;
 }
