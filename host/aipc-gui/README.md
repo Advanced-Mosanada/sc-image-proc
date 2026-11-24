@@ -26,7 +26,9 @@ uv sync
 ```
 
 `uv sync` keeps the existing `.venv`, including its access to the system
-packages.
+packages. A plain `uv run` in a fresh checkout makes a `.venv` *without*
+them: the player then says GStreamer for Python is missing and cannot open
+videos. Delete `.venv` and run the two commands above again.
 
 Why not PyGObject from PyPI? It compiles against the system's GLib and
 GStreamer headers (`-dev` packages, a C toolchain). The system copy already
@@ -43,16 +45,21 @@ uv run aipc 192.168.50.2 pipeline.set '{"text": "gray ! blur ksize=5"}'
 ```
 
 - **Video to the target** (*Input* tab): from this PC as H.264 (bitrate or
-  constant quality, preset, key frames) or as raw frames over TCP
-  (lossless); or a file the target plays itself, controlled by the same
-  player (choose it with the folder button: it lists the target's files).
+  constant quality, preset, key frames) or as raw frames, over TCP
+  (lossless, late when the link is slow) or UDP (never late, frames that
+  lose a packet are dropped); or a file the target plays itself, controlled
+  by the same player (choose it with the folder button: it lists the
+  target's files). Raw video needs a wired link: ~124 Mbit/s for PAL,
+  ~330 for 720p. For large raw frames over UDP, raise the target's socket
+  buffer limit: `sudo sysctl -w net.core.rmem_max=33554432`.
 - **Theme**: dark, light, or like the desktop: the sun/moon button in the
   header (Ctrl+T), or `--theme dark`. The choice is remembered.
 - **Keys**: Space play/pause, ←/→ back/forward 5 s, Home to the start,
   Ctrl+O open a video (or drop it on the left view), Ctrl+D discover,
   Ctrl+K connect, Ctrl+F search the functions. The ⓘ button lists them.
 - **Remembered** between runs (`~/.config/scip/aipc-gui.conf`): theme, last
-  target (preferred when discovering), window layout, the player's folder.
+  target (preferred when discovering), window layout, the player's folder,
+  the last folder on each target.
 
 ![aipc-gui, light theme, statistics](docs/screenshot-light.png)
 

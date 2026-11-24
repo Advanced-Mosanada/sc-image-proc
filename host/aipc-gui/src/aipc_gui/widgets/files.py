@@ -44,6 +44,7 @@ class TargetFileDialog(QDialog):
         self.chosen = ""
         self.folder = ""
         self.parent_folder = ""
+        self._request = 0  # only the newest listing is shown (replies may cross)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
@@ -81,21 +82,41 @@ class TargetFileDialog(QDialog):
         buttons.addWidget(self.open_button)
         layout.addLayout(buttons)
 
-        self.show_folder(settings.get("target/folder", "", str))
+        # Each target has its own folders: one remembered from another target
+        # (e.g. the PC's own scipd) would not exist on this one.
+        self.folder_key = f"target/folder/{client.host}" if client.host else "target/folder"
+        remembered = settings.get(self.folder_key, "", str)
+        self.show_folder(remembered, fallback=bool(remembered))
 
-    def show_folder(self, folder: str) -> None:
-        """List a folder of the target ("" = where the target suggests)."""
+    def show_folder(self, folder: str, fallback: bool = False, note: str = "") -> None:
+        """List a folder of the target ("" = where the target suggests). With
+        `fallback`, a folder the target does not have shows its suggestion instead."""
         self.status.setText("reading...")
+        self._request += 1
+        request = self._request
+
+        def shown(listing: dict[str, Any]) -> None:
+            if request == self._request:
+                self._show(listing, note)
+
+        def failed(error) -> None:
+            if request != self._request:
+                return
+            if fallback:
+                self.show_folder("", note=f"{folder} is not on this target")
+            else:
+                self.status.setText(
+                    f"<span style='color:{theme.current().danger}'>{error.message}</span>"
+                )
+
         self.client.call(
             "files.list",
             {"path": folder} if folder else {},
-            on_result=self._show,
-            on_error=lambda e: self.status.setText(
-                f"<span style='color:{theme.current().danger}'>{e.message}</span>"
-            ),
+            on_result=shown,
+            on_error=failed,
         )
 
-    def _show(self, listing: dict[str, Any]) -> None:
+    def _show(self, listing: dict[str, Any], note: str = "") -> None:
         self.folder, self.parent_folder = listing["path"], listing.get("parent", "")
         self.path.setText(self.folder)
         self.up.setEnabled(bool(self.parent_folder))
@@ -110,7 +131,10 @@ class TargetFileDialog(QDialog):
                 item.setToolTip(f"{entry['path']}  ({size_text(entry['size'])})")
             self.list.addItem(item)
         videos = sum(1 for e in listing["entries"] if e["kind"] != "folder")
-        self.status.setText(f"{videos} video(s) or image(s)" if videos else "no videos here")
+        text = f"{videos} video(s) or image(s)" if videos else "no videos here"
+        if note:
+            text = f"{note}; showing {self.folder}. {text}"
+        self.status.setText(text)
         self._update_buttons()
 
     def _activate(self, item: QListWidgetItem | None) -> None:
@@ -121,7 +145,7 @@ class TargetFileDialog(QDialog):
             self.show_folder(entry["path"])
             return
         self.chosen = entry["path"]
-        settings.put("target/folder", self.folder)
+        settings.put(self.folder_key, self.folder)
         self.accept()
 
     def _update_buttons(self) -> None:

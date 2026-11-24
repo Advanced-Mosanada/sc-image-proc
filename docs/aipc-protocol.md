@@ -18,13 +18,15 @@ host (GUI)                               target (scipd)
    |                                        |
    |  UDP 5000  H.264/RTP video  -------->  |    input  rtp://:5000
    |  or TCP 5000  raw video (GDP)  ----->  |    input  tcp://:5000   (lossless)
+   |  or UDP 5000  raw video (RTP)  ----->  |    input  rtpraw://:5000 (never late)
    |  <--------  H.264/RTP video  UDP 5002  |    output udp:HOST:5002
    |  <--------  H.264/RTP video  UDP 5004  |    input output udp:HOST:5004 (the input)
 ```
 
 Video never travels over the control connection; it uses standard RTP
 streams that any GStreamer, VLC or ffmpeg can produce or show, or raw
-frames in GStreamer's GDP framing over TCP when nothing may be lost.
+frames: in GStreamer's GDP framing over TCP when nothing may be lost, or
+over RTP/UDP (`rtpgstpay`) when a frame may be lost but never late.
 
 ## 1. Transport
 
@@ -203,6 +205,7 @@ The same strings as `scip-cli -i` / `-o`:
 | `camera:/dev/video0[:1280x720]` | V4L2 camera (live) |
 | `rtp://:5000` | H.264 over RTP/UDP sent to the target, e.g. by the GUI (live) |
 | `tcp://:5000` | Raw frames in GDP over TCP, the GUI's lossless mode (live; the size travels with the frames; waits for the next sender when one leaves) |
+| `rtpraw://:5000` | Raw frames over RTP/UDP (`rtpgstpay config-interval=1`), the GUI's raw UDP mode (live; the size travels in-band, resent every second; a frame that lost a packet is dropped whole) |
 | `rtsp://...`, `http(s)://...`, `file://...` | anything GStreamer's `uridecodebin` plays |
 | `gst:... ! appsink name=scip_sink` | any GStreamer pipeline |
 
@@ -258,7 +261,7 @@ Everything about the target, for the GUI's "about" page and for logs.
     "gstreamer": true,
     "window_system": false,
     "hardware": {"vpu_decoder": true, "vpu_encoder": true, "g2d": true},
-    "inputs": ["pattern", "image", "video", "camera", "rtp", "uri", "gst"],
+    "inputs": ["pattern", "image", "video", "camera", "rtp", "tcp", "rtpraw", "uri", "gst"],
     "outputs": ["display", "udp", "video", "image", "gst"]
   },
   "control": {"port": 5600, "discovery_port": 5601, "clients": 1}
@@ -541,3 +544,4 @@ drop.
 |---|---|
 | 1.0 | first version |
 | 1.1 | `tcp://` input (raw frames); player inputs: `input.set` `player`, `playback.*`, `files.list`, state `paused`; `input_outputs` in `output.*` and `Status` |
+| 1.2 | `rtpraw://` input (raw frames over RTP/UDP); `tcp` and `rtpraw` listed in `capabilities.inputs` |

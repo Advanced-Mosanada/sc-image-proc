@@ -3,8 +3,10 @@
 Streamer     a local video file -> the target, with player controls (play,
              pause, seek, speed, loop, A-B loop) and a preview of what is
              sent. Either H.264 over RTP/UDP (input rtp://:5000; the
-             compression is set by StreamSettings) or raw frames in GDP
-             over TCP (input tcp://:5000; lossless, ~124 Mbit/s for PAL).
+             compression is set by StreamSettings) or raw frames, ~124
+             Mbit/s for PAL: in GDP over TCP (input tcp://:5000; lossless)
+             or over RTP/UDP (input rtpraw://:5000; a frame that loses a
+             packet is dropped whole, none is ever late).
 RtpReceiver  H.264 over RTP/UDP from the target's output udp:HOST:5002 ->
              frames for display.
 
@@ -124,12 +126,16 @@ class StreamSettings:
       quality (x264's CRF, lower is better, ~18 looks lossless); `preset`
       trades encoding speed for quality per bit; a key frame every
       `keyframe_interval` frames lets a late receiver start.
-    raw=True: every pixel as decoded, in GDP over TCP. I420 is what most videos
-      decode to (4:2:0), so it is lossless for them at half the size of BGR.
+    raw=True: every pixel as decoded. I420 is what most videos decode to
+      (4:2:0), so it is lossless for them at half the size of BGR.
+      raw_udp=False: in GDP over TCP (every frame arrives, late if the link
+      is slow); True: over RTP/UDP with rtpgstpay (frames are dropped whole
+      when packets are lost, never late).
     """
 
     raw: bool = False
     raw_format: str = "I420"
+    raw_udp: bool = False
     bitrate_kbps: int = 6000
     quality: int = 0
     preset: str = "ultrafast"
@@ -137,7 +143,9 @@ class StreamSettings:
 
     def uri(self, port: int) -> str:
         """The target's input for this stream."""
-        return f"{'tcp' if self.raw else 'rtp'}://:{port}"
+        if self.raw:
+            return f"{'rtpraw' if self.raw_udp else 'tcp'}://:{port}"
+        return f"rtp://:{port}"
 
     def megabits(self, width: int, height: int, fps: float) -> float | None:
         """Network load in Mbit/s; None when it depends on the content (quality mode)."""
@@ -147,7 +155,7 @@ class StreamSettings:
 
     def describe(self) -> str:
         if self.raw:
-            return f"raw {self.raw_format}"
+            return f"raw {self.raw_format} over {'UDP' if self.raw_udp else 'TCP'}"
         rate = f"quality {self.quality}" if self.quality else f"{self.bitrate_kbps} kbit/s"
         return f"H.264 {rate}, {self.preset}"
 
@@ -191,8 +199,9 @@ class Streamer:
         self.b: float | None = None
         self.broken = False  # the connection to the target failed: reconnect on play
         # Raw mode: frames leave the player's pipeline through an appsink and are
-        # sent by this one (appsrc ! gdppay ! tcpclientsink). Kept apart because a
-        # flushing seek never returns when gdppay sits behind the preview's tee.
+        # sent by this one (appsrc ! gdppay ! tcpclientsink, or appsrc ! rtpgstpay
+        # ! udpsink). Kept apart because a flushing seek never returns when gdppay
+        # sits behind the preview's tee.
         self.raw_sender = None
         self._raw_caps = None
         self._raw_sent_pts: int | None = None
@@ -250,7 +259,7 @@ class Streamer:
         if self.pipeline is None:
             return
         if self.settings.raw:
-            self._rebuild()  # a TCP connection cannot be moved
+            self._rebuild()  # a TCP connection cannot be moved (and UDP is rare)
         else:
             udp = self.pipeline.get_by_name("udp")
             udp.set_property("host", host)
@@ -392,8 +401,23 @@ class Streamer:
         )
 
     def _connect_raw(self) -> None:
-        """Open the TCP connection to the target's tcp:// input. The target may
-        still be (re)opening it, so try again for a moment."""
+        """Open the TCP connection to the target's tcp:// input (the target may
+        still be (re)opening it, so try again for a moment), or the UDP sender
+        to its rtpraw:// input."""
+        if self.settings.raw_udp:
+            # config-interval: the caps are resent every second, so a target that
+            # (re)opens its input later still learns the frame format.
+            sender = Gst.parse_launch(
+                "appsrc name=src format=time ! rtpgstpay config-interval=1 "
+                f"! udpsink host={self.host} port={self.port} sync=false"
+            )
+            if sender.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+                message = sender.get_bus().pop_filtered(Gst.MessageType.ERROR)
+                sender.set_state(Gst.State.NULL)
+                error = _error_text(message) if message else "cannot send"
+                raise RuntimeError(f"raw video to {self.host}:{self.port}: {error}")
+            self.raw_sender, self._raw_caps, self._raw_sent_pts = sender, None, None
+            return
         deadline = time.monotonic() + CONNECT_TIMEOUT
         while True:
             sender = Gst.parse_launch(

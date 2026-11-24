@@ -46,6 +46,9 @@ struct SourceOptions {
 ///   tcp://[ADDRESS]:PORT          raw video in GDP over TCP, e.g. tcp://:5000 (live): the
 ///                                 host GUI's lossless mode; waits for the next sender
 ///                                 when one disconnects
+///   rtpraw://[ADDRESS]:PORT       raw video over RTP/UDP (rtpgstpay), e.g. rtpraw://:5000
+///                                 (live): the host GUI's raw UDP mode; a frame that lost a
+///                                 packet is dropped whole
 ///   rtsp://... http(s)://... file://...   anything uridecodebin plays (rtsp: live)
 ///   gst:<launch line>             any GStreamer pipeline ending in `appsink name=scip_sink`
 /// Live sources may start before the sender: their format arrives with the

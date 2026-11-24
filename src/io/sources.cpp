@@ -47,7 +47,7 @@ private:
 };
 
 /// rtp://:5000, rtp://@:5000 (any address), rtp://239.1.2.3:5000 (multicast);
-/// the same for tcp:// (an address of this machine to listen on).
+/// the same for tcp:// and rtpraw:// (an address of this machine to listen on).
 std::pair<std::string, int> parseListenAddress(const std::string& uri, const std::string& scheme)
 {
     const std::string usage = "usage: " + scheme + "://[ADDRESS]:PORT, e.g. " + scheme + "://:5000";
@@ -228,6 +228,10 @@ FrameSourcePtr openSource(const std::string& uri, const SourceOptions& options)
     if (detail::startsWith(uri, "tcp://")) {
         const auto [address, port] = parseListenAddress(uri, "tcp");
         return gst::openTcp(address, port, options);
+    }
+    if (detail::startsWith(uri, "rtpraw://")) {
+        const auto [address, port] = parseListenAddress(uri, "rtpraw");
+        return gst::openRtpRaw(address, port, options);
     }
     if (uri.find("://") != std::string::npos) {
         return gst::openUri(uri, options);

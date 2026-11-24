@@ -43,6 +43,8 @@ KINDS = [
 ]
 KIND_LABELS = [title for _, title, _ in KINDS]
 CHOICE_HEIGHT = 46
+# How the PC sends its video (the "Sent as" choice).
+H264, RAW_TCP, RAW_UDP = "h264", "raw-tcp", "raw-udp"
 
 
 def describe_uri(uri: str) -> str:
@@ -182,16 +184,19 @@ class InputPanel(QScrollArea):
         layout.addWidget(self.settings_card)
 
         # From this PC: the player sends H.264 to rtp://:PORT on the target, or
-        # raw frames to tcp://:PORT.
+        # raw frames to tcp://:PORT or rtpraw://:PORT.
         form = self.pages.add_form()
         self.stream_form = form
         self.pc_port = port_box(VIDEO_TO_TARGET_PORT)
         form.addRow("Port on the target", self.pc_port)
         self.transport = QComboBox()
-        self.transport.addItem("H.264, compressed (RTP over UDP)", False)
-        self.transport.addItem("Raw frames, lossless (TCP)", True)
+        self.transport.addItem("H.264, compressed (RTP over UDP)", H264)
+        self.transport.addItem("Raw frames, lossless (TCP)", RAW_TCP)
+        self.transport.addItem("Raw frames (RTP over UDP)", RAW_UDP)
         self.transport.setToolTip(
-            "Raw: every pixel as decoded; fine for PAL-size video on a gigabit link"
+            "Raw: every pixel as decoded; fine for PAL-size video on a gigabit link.\n"
+            "TCP: every frame arrives, late when the link is too slow.\n"
+            "UDP: never late, but a frame that loses a packet is dropped."
         )
         form.addRow("Sent as", self.transport)
         self.rate_mode = QComboBox()
@@ -309,8 +314,10 @@ class InputPanel(QScrollArea):
     # --- how the PC streams ----------------------------------------------------
 
     def stream_settings(self) -> StreamSettings:
+        transport = self.transport.currentData()
         return StreamSettings(
-            raw=bool(self.transport.currentData()),
+            raw=transport != H264,
+            raw_udp=transport == RAW_UDP,
             raw_format=self.raw_format.currentData(),
             bitrate_kbps=self.bitrate.value(),
             quality=self.quality.value() if self.rate_mode.currentIndex() == 1 else 0,
@@ -325,7 +332,12 @@ class InputPanel(QScrollArea):
 
     def _load_stream_settings(self) -> None:
         d = StreamSettings()
-        self.transport.setCurrentIndex(1 if settings.get("stream/raw", d.raw, bool) else 0)
+        self._select_transport(
+            self._transport_of(
+                settings.get("stream/raw", d.raw, bool),
+                settings.get("stream/raw_udp", d.raw_udp, bool),
+            )
+        )
         fmt = settings.get("stream/raw_format", d.raw_format, str)
         self.raw_format.setCurrentIndex(max(0, self.raw_format.findData(fmt)))
         self.bitrate.setValue(settings.get("stream/bitrate_kbps", d.bitrate_kbps, int))
@@ -336,13 +348,22 @@ class InputPanel(QScrollArea):
         self.preset.setCurrentText(preset if preset in X264_PRESETS else d.preset)
         self.keyframes.setValue(settings.get("stream/keyframe_interval", d.keyframe_interval, int))
 
-    def _set_transport(self, raw: bool) -> None:
-        if bool(self.transport.currentData()) != raw:
+    @staticmethod
+    def _transport_of(raw: bool, raw_udp: bool) -> str:
+        return (RAW_UDP if raw_udp else RAW_TCP) if raw else H264
+
+    def _select_transport(self, transport: str) -> None:
+        self.transport.setCurrentIndex(max(0, self.transport.findData(transport)))
+
+    def _set_transport(self, transport: str) -> None:
+        """Show the target's transport (also when another GUI chose it)."""
+        if self.transport.currentData() != transport:
             self.transport.blockSignals(True)
-            self.transport.setCurrentIndex(1 if raw else 0)
+            self._select_transport(transport)
             self.transport.blockSignals(False)
             self._show_stream_rows()
-            settings.put("stream/raw", raw)
+            settings.put("stream/raw", transport != H264)
+            settings.put("stream/raw_udp", transport == RAW_UDP)
 
     def _show_stream_rows(self) -> None:
         st = self.stream_settings()
@@ -377,6 +398,7 @@ class InputPanel(QScrollArea):
         st = self.stream_settings()
         for key, value in (
             ("raw", st.raw),
+            ("raw_udp", st.raw_udp),
             ("raw_format", st.raw_format),
             ("bitrate_kbps", st.bitrate_kbps),
             ("quality", st.quality),
@@ -389,7 +411,7 @@ class InputPanel(QScrollArea):
 
     def _push_stream_settings(self) -> None:
         """While the PC streams: new encoder settings go to the player; a new
-        transport also changes the target's input (rtp:// <-> tcp://)."""
+        transport also changes the target's input (rtp://, tcp://, rtpraw://)."""
         if self._listen_port(self.current_uri) is None or self.kind.currentIndex() != FROM_PC:
             return
         st = self.stream_settings()
@@ -422,12 +444,12 @@ class InputPanel(QScrollArea):
         self.current_uri = uri
         port = self._listen_port(uri)
         if port is not None:
-            raw = uri.startswith("tcp://")
+            raw = uri.startswith(("tcp://", "rtpraw://"))
             if raw or self.kind.currentIndex() != NETWORK:
                 self.kind.setCurrentIndex(FROM_PC)
             if self.kind.currentIndex() == FROM_PC:
                 self.pc_port.setValue(port)
-                self._set_transport(raw)
+                self._set_transport(self._transport_of(raw, uri.startswith("rtpraw://")))
             else:
                 self.network_port.setValue(port)
         elif uri.startswith("camera:"):
@@ -520,12 +542,13 @@ class InputPanel(QScrollArea):
 
     @staticmethod
     def _listen_port(uri: str) -> int | None:
-        """The port of an rtp:// or tcp:// input."""
-        if uri.startswith(("rtp://", "tcp://")) and ":" in uri[6:]:
-            try:
-                return int(uri.rsplit(":", 1)[1])
-            except ValueError:
-                return None
+        """The port of an rtp://, tcp:// or rtpraw:// input."""
+        for scheme in ("rtp://", "tcp://", "rtpraw://"):
+            if uri.startswith(scheme) and ":" in uri[len(scheme) :]:
+                try:
+                    return int(uri.rsplit(":", 1)[1])
+                except ValueError:
+                    return None
         return None
 
 

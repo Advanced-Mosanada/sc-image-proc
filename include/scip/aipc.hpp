@@ -25,7 +25,7 @@
 namespace scip::aipc {
 
 inline constexpr char kProtocolName[] = "AIPC";
-inline constexpr char kProtocolVersion[] = "1.1";
+inline constexpr char kProtocolVersion[] = "1.2";
 inline constexpr int kDefaultPort = 5600;
 inline constexpr int kDefaultDiscoveryPort = 5601;
 inline constexpr std::size_t kMaxMessageBytes = 1024 * 1024;

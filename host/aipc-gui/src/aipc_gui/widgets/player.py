@@ -124,7 +124,13 @@ class PlayerPanel(Card):
         if media.available():
             self.streamer = media.Streamer(on_frame=on_frame, on_error=self.message.emit)
         else:
-            self.hint.setText(f"Streaming needs GStreamer for Python: {media.GST_ERROR}")
+            # Usually a virtual environment made without the system's python3-gi
+            # (e.g. created by a bare `uv run`): files cannot be opened then.
+            self.hint.setText(
+                f"Opening and streaming videos needs GStreamer for Python ({media.GST_ERROR}). "
+                "In host/aipc-gui: rm -rf .venv && uv venv --system-site-packages "
+                "--python /usr/bin/python3 && uv sync"
+            )
             self.hint.show()
 
         # Title row: what is loaded, and the Open button.

@@ -632,6 +632,37 @@ FrameSourcePtr openRtp(const std::string& address, int port, const SourceOptions
         });
 }
 
+FrameSourcePtr openRtpRaw(const std::string& address, int port, const SourceOptions& options)
+{
+    // Raw frames over RTP/UDP, as the host GUI sends in raw UDP mode:
+    //   ... ! video/x-raw,format=I420 ! rtpgstpay config-interval=1 ! udpsink host=TARGET port=5000
+    // rtpgstpay carries the caps in-band (resent every second, so a receiver that
+    // starts late, or a sender with another size, is picked up) and splits each
+    // frame over many packets; rtpgstdepay drops a frame that lost a packet, so
+    // frames arrive whole or not at all. No jitter buffer: on a LAN packets do not
+    // reorder, and at ~60k packets/s it would only cost time.
+    // The kernel caps the socket buffer at net.core.rmem_max (208 KB on Debian):
+    // raise it on the receiver for large frames, or frames are lost in bursts.
+    const std::string description =
+        "udpsrc name=scip_udp buffer-size=33554432 "
+        "caps=\"application/x-rtp,media=application,clock-rate=90000,encoding-name=X-GST\" "
+        "! rtpgstdepay ! " +
+        convertForScip(options) + " ! appsink name=scip_sink sync=false";
+    GstSource::Config config;
+    config.maxFrames = options.maxFrames;
+    config.live = true;
+    const std::string where =
+        (address.empty() ? std::string("*") : address) + ":" + std::to_string(port);
+    return std::make_unique<GstSource>(
+        description, config, "rtpraw " + where, [&](GstElement* pipeline, GstElement*) {
+            Ptr<GstElement> udp = childByName(pipeline, "scip_udp");
+            g_object_set(udp.get(), "port", port, nullptr);
+            if (!address.empty()) {
+                g_object_set(udp.get(), "address", address.c_str(), nullptr);
+            }
+        });
+}
+
 FrameSourcePtr openTcp(const std::string& address, int port, const SourceOptions& options)
 {
     // Raw frames in GDP (GStreamer's own framing: caps travel with the data) over

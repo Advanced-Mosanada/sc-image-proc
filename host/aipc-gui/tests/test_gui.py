@@ -95,10 +95,31 @@ def test_streams_raw_frames_to_the_target(qtbot, window, clip):
     qtbot.waitUntil(lambda: window.last_stats.get("state") == "running", timeout=3000)
     assert window.last_stats["input"]["info"]["width"] == 320
 
+    # Raw over UDP while playing: the target's input follows by itself.
+    window.inputs.transport.setCurrentIndex(2)
+    qtbot.waitUntil(lambda: window.inputs.current_uri == f"rtpraw://:{to_target}", timeout=3000)
+    assert "over UDP" in window.player.route_label.text()
+    frames = window.last_stats.get("frames", 0)
+    qtbot.waitUntil(lambda: window.last_stats.get("frames", 0) > frames + 10, timeout=5000)
+
     # Back to H.264 while playing: the target's input follows by itself.
     window.inputs.transport.setCurrentIndex(0)
     qtbot.waitUntil(lambda: window.inputs.current_uri == f"rtp://:{to_target}", timeout=3000)
     qtbot.waitUntil(lambda: window.last_stats.get("state") == "running", timeout=5000)
+
+
+def test_file_dialog_skips_a_folder_the_target_does_not_have(qtbot, window, tmp_path):
+    """A folder remembered for this target that it no longer has (or one from
+    another target) must not leave the dialog empty: the target's suggestion shows."""
+    from aipc_gui import settings
+    from aipc_gui.widgets.files import TargetFileDialog
+
+    settings.put(f"target/folder/{window.client.host}", str(tmp_path / "gone"))
+    dialog = TargetFileDialog(window.client)
+    qtbot.addWidget(dialog)
+    qtbot.waitUntil(lambda: dialog.folder != "", timeout=3000)
+    assert "is not on this target" in dialog.status.text()
+    assert dialog.list.count() > 0 or dialog.up.isEnabled()  # something to choose from
 
 
 @pytest.mark.skipif(not media.available(), reason="no GStreamer for Python")

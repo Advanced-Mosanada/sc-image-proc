@@ -162,6 +162,7 @@ Pipelines are written like GStreamer launch lines: `gray ! blur ksize=5 ! resize
 | `camera:/dev/video0[:WxH]` | V4L2 camera, until Ctrl+C; `--list-devices` shows its sizes |
 | `rtp://:5000` | H.264 over RTP/UDP sent to this machine (live) |
 | `tcp://:5000` | raw frames in GDP over TCP, lossless (live), e.g. from the GUI |
+| `rtpraw://:5000` | raw frames over RTP/UDP (live): a frame that loses a packet is dropped, none is late |
 | `rtsp://...`, `http(s)://...` | network streams GStreamer can play |
 | `gst:'... ! appsink name=scip_sink'` | any GStreamer pipeline |
 
@@ -247,7 +248,8 @@ How the video gets to the target, all in the *Input* tab:
 | | sent as | the target's input |
 |---|---|---|
 | *Video from this PC*, H.264 | compressed by the PC: bitrate or constant quality, x264 preset, key frames | `rtp://:5000` |
-| *Video from this PC*, raw | every pixel as decoded (I420: ~124 Mbit/s for PAL, ~330 for 720p30) | `tcp://:5000` |
+| *Video from this PC*, raw over TCP | every pixel as decoded (I420: ~124 Mbit/s for PAL, ~330 for 720p30); every frame arrives, late if the link is too slow | `tcp://:5000` |
+| *Video from this PC*, raw over UDP | the same, as RTP (`rtpgstpay`); frames that lose a packet are dropped, none is late | `rtpraw://:5000` |
 | *File or URL on the target* | nothing: the target plays its own file, the player controls it | the file |
 
 In the last case the target sends its input back too (UDP 5004, compressed:

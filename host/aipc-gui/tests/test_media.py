@@ -140,6 +140,42 @@ def test_sends_raw_frames_over_tcp(clip):
     assert receiver.frames[-1] == ("I420", 320, 240)  # every pixel, as decoded
 
 
+class RtpGstReceiver(GdpReceiver):
+    """What the target's rtpraw:// input does, in Python: raw frames over RTP/UDP."""
+
+    def __init__(self, port: int):
+        self.frames = []
+        self.pipeline = media.Gst.parse_launch(
+            f"udpsrc address=127.0.0.1 port={port} "
+            'caps="application/x-rtp,media=application,clock-rate=90000,encoding-name=X-GST" '
+            "! rtpgstdepay ! appsink name=sink max-buffers=4 drop=true sync=false"
+        )
+        self.pipeline.set_state(media.Gst.State.PLAYING)
+
+
+@pytest.mark.skipif(not media.has_element("rtpgstpay"), reason="needs rtpgstpay")
+def test_sends_raw_frames_over_udp(clip):
+    port = free_udp_port()
+    receiver = RtpGstReceiver(port)
+    settings = media.StreamSettings(raw=True, raw_udp=True)
+    assert settings.uri(5000) == "rtpraw://:5000"
+    assert settings.describe() == "raw I420 over UDP"
+    streamer = media.Streamer(settings=settings)
+    streamer.set_destination("127.0.0.1", port)
+    try:
+        streamer.open(clip)
+        streamer.seek(1.0)  # paused: the frame shown is sent too
+        run_for(0.3, streamer, receiver)
+        assert len(receiver.frames) == 1
+        streamer.play()
+        run_for(1.0, streamer, receiver)
+    finally:
+        streamer.close()
+        receiver.stop()
+    assert len(receiver.frames) > 20
+    assert receiver.frames[-1] == ("I420", 320, 240)  # caps travel in-band
+
+
 def test_new_settings_keep_the_position(clip):
     port = free_udp_port()
     received = []

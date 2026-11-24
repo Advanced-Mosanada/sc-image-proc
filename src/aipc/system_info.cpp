@@ -123,7 +123,7 @@ Json inputSchemes()
 {
     Json schemes = {"pattern", "image"};
     if (io::hasGStreamer()) {
-        for (const char* scheme : {"video", "camera", "rtp", "uri", "gst"}) {
+        for (const char* scheme : {"video", "camera", "rtp", "tcp", "rtpraw", "uri", "gst"}) {
             schemes.push_back(scheme);
         }
     }

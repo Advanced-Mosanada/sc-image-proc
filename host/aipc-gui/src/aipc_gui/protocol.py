@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-PROTOCOL_VERSION = "1.1"
+PROTOCOL_VERSION = "1.2"
 DEFAULT_PORT = 5600
 DISCOVERY_PORT = 5601
 VIDEO_TO_TARGET_PORT = 5000  # the target's input rtp://:5000
